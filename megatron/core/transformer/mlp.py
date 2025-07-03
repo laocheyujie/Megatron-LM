@@ -123,6 +123,7 @@ class MLP(MegatronModule):
     def forward(self, hidden_states, per_token_scale=None):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
+        # NOTE: KEY MLP 3. 每个 GPU 对各自的输入 [sq, b, 4h/p] 执行计算，输出 [sq, b, 4h/p]
         nvtx_range_push(suffix="linear_fc1")
         intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
         nvtx_range_pop(suffix="linear_fc1")
@@ -180,6 +181,7 @@ class MLP(MegatronModule):
         nvtx_range_pop(suffix="activation")
 
         # [s, b, h]
+        # NOTE: KEY MLP 4. 执行 Linear 计算 [s, b, 4 * h/p] -> [s, b, h]
         nvtx_range_push(suffix="linear_fc2")
         output, output_bias = self.linear_fc2(intermediate_parallel)
         nvtx_range_pop(suffix="linear_fc2")

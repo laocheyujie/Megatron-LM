@@ -37,6 +37,7 @@ def _bias_dropout_add_func(x_with_bias, residual, prob, training):
     # done generically outside the if statement, but that stops fusing of Bias
     # Addition-Dropout-Residual Addition operation. So doing it together inside
     # the conditional branch to improve performance
+    # NOTE: KEY Add&Norm 1. 执行残差 residual 连接作为 Layer Norm 的输入 [sq, b, h]
     if bias is not None:
         if inplace:
             x.add_(bias)
@@ -89,4 +90,5 @@ def get_bias_dropout_add(training, fused):
         else:
             return bias_dropout_add_fused_inference
     else:
+        # NOTE: KEY SelfAttention 7. 使用 bias_dropout_add_fused 融合算子
         return bias_dropout_add_unfused(training)

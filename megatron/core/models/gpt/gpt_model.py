@@ -103,6 +103,7 @@ class GPTModel(LanguageModule):
         self.transformer_layer_spec: ModuleSpec = transformer_layer_spec
         self.vocab_size = vocab_size
         self.max_sequence_length = max_sequence_length
+        # NOTE: KEY2. 设置 LayerNorm 的位置属于 pre or post
         self.pre_process = pre_process
         self.post_process = post_process
         self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
@@ -131,6 +132,7 @@ class GPTModel(LanguageModule):
         self.mtp_block_spec = mtp_block_spec
         self.mtp_process = mtp_block_spec is not None
 
+        # NOTE: KEY1. 先构建 Embedding 层
         if self.pre_process or self.mtp_process:
             self.embedding = LanguageModelEmbedding(
                 config=self.config,
@@ -168,9 +170,12 @@ class GPTModel(LanguageModule):
         # Cache for RoPE tensors which do not change between iterations.
         self.rotary_pos_emb_cache = {}
 
+        # NOTE: KEY3. 构建 TransformerBlock
         # Transformer.
+        # NOTE: 输入shape [s, b, h]
         self.decoder = TransformerBlock(
             config=self.config,
+            # NOTE: KEY3. 通过 get_gpt_layers_local_spec 注册模型 SelfAttention 结构
             spec=transformer_layer_spec,
             pre_process=self.pre_process,
             post_process=self.post_process,

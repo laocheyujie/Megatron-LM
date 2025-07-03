@@ -148,6 +148,7 @@ class DotProductAttention(MegatronModule):
         # This will be a simple view when doing normal attention, but in group query attention
         # the key and value tensors are repeated to match the queries so you can't use
         # simple strides to extract the queries.
+        # NOTE: KEY Attention 1. 利用 DotProuctAttention 每个 GPU 中所有的 Head 合并 Q&K 
         query = query.reshape(output_size[2], output_size[0] * output_size[1], -1)
         # [sk, b, np, hn] -> [sk, b * np, hn]
         key = key.view(output_size[3], output_size[0] * output_size[1], -1)
@@ -167,6 +168,7 @@ class DotProductAttention(MegatronModule):
         )
 
         # change view to [b, np, sq, sk]
+        # NOTE: KEY Attention 2. 计算 Q*K 得到每个 GPU 上的 Attention Scores [b*np, sq, sk] 映射为 [b, np, sq, sk]
         attention_scores = matmul_result.view(*output_size)
 
         # ===========================
@@ -174,6 +176,7 @@ class DotProductAttention(MegatronModule):
         # ===========================
 
         # attention scores and attention mask [b, np, sq, sk]
+        # NOTE: KEY Attention 3. 每个 GPU 上的 Attention Score [b, np, sq, sk] 执行 scale_mask_softmax 和 dropout 得到 attention_probs [b, np, sq, sk]
         attention_probs: Tensor = self.scale_mask_softmax(attention_scores, attention_mask)
 
         # This is actually dropping out entire tokens to attend to, which might
@@ -202,15 +205,18 @@ class DotProductAttention(MegatronModule):
         attention_probs = attention_probs.view(output_size[0] * output_size[1], output_size[2], -1)
 
         # matmul: [b * np, sq, hn]
+        # NOTE: KEY Attention 4. V 映射 [n, np, sq, hn] 后跟 attention_probs [b*np, sq, sk] 执行计算 attention_probs * V
         context = torch.bmm(attention_probs, value.transpose(0, 1))
 
         # change view [b, np, sq, hn]
         context = context.view(*output_size)
 
         # [b, np, sq, hn] --> [sq, b, np, hn]
+        # NOTE: KEY Attention 5. 将 context 映射为 [sq, b, np, hn]
         context = context.permute(2, 0, 1, 3).contiguous()
 
         # [sq, b, np, hn] --> [sq, b, hp]
+        # NOTE: KEY Attention 6. 最终得到每个 GPU 上的 Core Attetion 结果 [sq, b, hp]
         new_context_shape = context.size()[:-2] + (self.hidden_size_per_partition,)
         context = context.view(*new_context_shape)
 

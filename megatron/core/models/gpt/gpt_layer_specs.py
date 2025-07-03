@@ -215,6 +215,8 @@ def get_gpt_layer_local_spec(
         ModuleSpec: Module specification with Megatron-Core modules
     """
 
+    # NOTE: 通过 get_gpt_layers_local_spec 注册模型结构
+
     if use_kitchen:
         assert HAVE_KITCHEN
         backend = KitchenSpecProvider(fallback=LocalSpecProvider())
@@ -276,9 +278,12 @@ def get_gpt_layer_local_spec(
                 self_attention=ModuleSpec(
                     module=SelfAttention,
                     params={"attn_mask_type": AttnMaskType.causal},
+                    # NOTE: KEY SelfAttention 1. SelfAttentionSubmodules 实现 SelfAttention 的并行
                     submodules=SelfAttentionSubmodules(
+                        # NOTE: KEY SelfAttention 2. ColumnParallelLinear [sq, b, h] -> [sq, b, 3h], 将输出分割为 Q/K/V 3个矩阵后执行 Self Attetion 计算
                         linear_qkv=backend.column_parallel_linear(),
                         core_attention=backend.core_attention(),
+                        # NOTE: KEY SelfAttention 5. SelfAttetion 中 RowParallelLinear Input [sq, b, hp] -> Output [sq, b, h]
                         linear_proj=backend.row_parallel_linear(),
                         q_layernorm=(
                             L2Norm if qk_l2_norm else (qk_norm if qk_layernorm else IdentityOp)
@@ -288,9 +293,14 @@ def get_gpt_layer_local_spec(
                         ),
                     ),
                 ),
+                # NOTE: KEY Add&Norm Self Attention 输出 [sq, b, h] 作为 Dropout 输入，Dropout 输出[sq, b, h] 作为 Attention 的整体输出
                 self_attn_bda=get_bias_dropout_add,
                 pre_mlp_layernorm=layer_norm,
+                # NOTE: KEY MLP
                 mlp=mlp,
+                # NOTE: KEY MLP 5. Dropout 输入输出 shape [sq, b, h]，得到 MLP 整体输出 [sq, b, h]
+                # NOTE: KEY MLP 6. Add 将残差连接 Residual + MLP 输出 [sq, b, h]
+                # NOTE: KEY MLP 7. 最终得到完整 Transformer Layer 输出 [sq, b, h] 
                 mlp_bda=get_bias_dropout_add,
                 sharded_state_dict_keys_map={
                     'input_layernorm.': 'self_attention.linear_qkv.layer_norm_',
@@ -374,7 +384,10 @@ def get_mlp_module_spec_for_backend(
             assert linear_fc1 is not None
         else:
             linear_fc1 = backend.column_parallel_linear()
+        # NOTE: KEY MLP
         return ModuleSpec(
+            # NOTE: KEY MLP 1. 通过 MLPSubmodules 类注册到 get_mlp_module_spec()
+            # NOTE: KEY MLP 2. 构建 GPU 并行计算的 PrarallelMLP，其中一个行并行，一个列并行，MLP 4h -> h RowParallelLinear 输出 [sq, b, h]
             module=MLP, submodules=MLPSubmodules(linear_fc1=linear_fc1, linear_fc2=linear_fc2)
         )
     else:

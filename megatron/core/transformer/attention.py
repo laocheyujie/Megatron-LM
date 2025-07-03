@@ -942,6 +942,7 @@ class SelfAttention(Attention):
             self.hidden_size_per_attention_head,
         ]
 
+        # NOTE: KEY SelfAttention 3. 每个 GPU 将 ColumnParallelLinear 输出分割为 Q/K/V 3个矩阵
         if SplitAlongDim is not None:
 
             # [sq, b, ng, (np/ng + 2) * hn]
@@ -954,6 +955,7 @@ class SelfAttention(Attention):
             (query, key, value) = torch.split(mixed_qkv, split_arg_list, dim=3)
 
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
+        # NOTE: KEY SelfAttention 4. 合并所有的 Head 执行 Q/K/V Attention 计算
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
 
         if self.q_layernorm is not None:

@@ -232,6 +232,7 @@ def _get_block_submodules(
             return spec.submodules
         elif issubclass(spec.module, BaseTransformerLayer):
             num_layers = get_num_layers_to_build(config, vp_stage)
+            # NOTE: KEY LayerNorm 2. 实际调用 Nrom 算子进行加速
             return TransformerBlockSubmodules(
                 layer_specs=[spec] * num_layers, layer_norm=LayerNormImpl
             )
@@ -337,6 +338,7 @@ class TransformerBlock(MegatronModule):
         # In pipeline parallelism, we want to add this LN only to the last stage of the pipeline
         # self.post_process and self.post_layer_norm guide this behavior
         if self.submodules.layer_norm and self.post_process and self.post_layer_norm:
+            # NOTE: KEY LayerNorm 1. 构建 LayerNorm
             self.final_layernorm = build_module(
                 self.submodules.layer_norm,
                 config=self.config,

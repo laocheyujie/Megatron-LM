@@ -53,6 +53,7 @@ class LanguageModelEmbedding(MegatronModule):
         )
 
         # Word embeddings (parallel).
+        # NOTE: KEY Embedding 1. Embedding Parallelism 的实现
         self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
             num_embeddings=self.vocab_size,
             embedding_dim=self.config.hidden_size,

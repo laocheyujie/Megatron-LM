@@ -58,6 +58,7 @@ except ImportError:
 stimer = StragglerDetector()
 
 
+# NOTE: 1. 获取模型
 def model_provider(
     pre_process=True, post_process=True, vp_stage: Optional[int] = None
 ) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
@@ -156,6 +157,7 @@ def model_provider(
                 config, transformer_layer_spec, use_transformer_engine=use_te, vp_stage=vp_stage
             )
 
+        # NOTE: KEY2. GPTModel 类
         model = GPTModel(
             config=config,
             transformer_layer_spec=transformer_layer_spec,
@@ -177,6 +179,7 @@ def model_provider(
     return model
 
 
+# NOTE: 2. 获取数据集
 def get_batch(data_iterator):
     """Generate a batch."""
 
@@ -261,6 +264,7 @@ def loss_func(
     return (loss, num_tokens, {'lm loss': reporting_loss})
 
 
+# NOTE: 3. 前向传播函数
 def forward_step(data_iterator, model: GPTModel):
     """Forward training step.
 
@@ -361,6 +365,7 @@ if __name__ == "__main__":
     # Optionally enable inprocess restart on pretrain
     pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
 
+    # NOTE: KEY1. 入口函数，开始训练
     pretrain(
         train_valid_test_datasets_provider,
         model_provider,

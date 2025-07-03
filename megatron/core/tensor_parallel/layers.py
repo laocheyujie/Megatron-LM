@@ -204,6 +204,7 @@ class VocabParallelEmbedding(torch.nn.Module):
     ):
         super(VocabParallelEmbedding, self).__init__()
         # Keep the input dimensions.
+        # NOTE: KEY Embedding 2. 对输入 token sequence 执行 Embedding 并行
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.reduce_scatter_embeddings = reduce_scatter_embeddings

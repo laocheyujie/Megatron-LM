@@ -639,6 +639,25 @@ def initialize_model_parallel(
     ranks 8 to 15 belong to the second box.
 
     """
+    # NOTE: 重点，初始化模型并行组
+    # 假设有 16 个 GPU, tensor_model_parallel_size=2, pipeline_model_parallel_size=4, data_parallel_size=2
+    # 那么会创建 8 个张量并行组 (16/2=8), 4 个流水线并行组 (16/4=4), 8 个数据并行组 (16/2=8)
+    # NOTE: 每个组内的 GPU 互相通讯，先切模型，再切数据
+    
+    # TP: 16 个 GPU 被分成 8 个张量并行组，每个张量并行组有 2 个 GPU: 
+    # NOTE: TP 组要保证每个组内的 GPU 相邻
+    # NOTE: TP 一般用 allreduce 通讯方式
+    # [g0, g1], [g2, g3], [g4, g5], [g6, g7], [g8, g9], [g10, g11], [g12, g13], [g14, g15]
+    
+    # PP: 16 个 GPU 被分成 4 个流水线并行组，每个流水线并行组有 4 个 GPU:
+    # NOTE: PP 每隔 world_size // pp_size 个 GPU 为一组
+    # NOTE: PP 一般用 P2POp 点对点的通讯方式
+    # [g0, g4, g8, g12], [g1, g5, g9, g13], [g2, g6, g10, g14], [g3, g7, g11, g15]
+    
+    # DP: 16 个 GPU 被分成 8 个数据并行组，每个数据并行组有 2 个 GPU: 
+    # NOTE: TP + PP 为一个完整模型需要的 GPU 数量
+    # NOTE: DP = world_size / (TP * PP) 表示同时训练 DP 个模型，可以用 DP 个 mini-batch 输入到 DP 个模型中
+    # [g0, g2], [g1, g3], [g4, g6], [g5, g7], [g8, g10], [g9, g11], [g12, g14], [g13, g15]
 
     # Deprecation warning for encoder pipeline parallelism
     if encoder_tensor_model_parallel_size != 0 or encoder_pipeline_model_parallel_size != 0:

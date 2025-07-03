@@ -722,6 +722,7 @@ def pretrain(
         store = torch.distributed.PrefixStore(str(iteration), store)
 
     # Initalize and get arguments, timers, and Tensorboard writer.
+    # NOTE: 1. 初始化 Megatron，最核心的函数
     initialize_megatron(
         extra_args_provider=extra_args_provider,
         args_defaults=args_defaults,
@@ -1219,6 +1220,7 @@ def setup_model_and_optimizer(
     timers = get_timers()
     one_logger = get_one_logger()
 
+    # NOTE: 重点，分布式并行启动 n 个进程，每个进程里有一个子模型
     model = get_model(model_provider_func, model_type)
     unwrapped_model = unwrap_model(model)
 

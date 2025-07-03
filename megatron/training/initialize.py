@@ -89,6 +89,7 @@ def initialize_megatron(
 
     # set global args, build tokenizer, and set adlr-autoresume,
     # tensorboard-writer, and timers.
+    # NOTE: 1.1 设置全局变量
     set_global_variables(args)
 
     # set logging level
@@ -118,6 +119,7 @@ def initialize_megatron(
     def finish_mpu_init():
         args = get_args()
         # Pytorch distributed.
+        # NOTE: 1.2 利用 torch.distributed 初始化分布式环境
         _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, store)
 
         # Random seeds for reproducibility.
@@ -333,6 +335,7 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
             'timeout': timedelta(minutes=args.distributed_timeout_minutes),
         }
 
+        # NOTE: 1.2.1 初始化分布式环境，会生成一个进程组，同组内进程训练同一个模型，也能确定用什么方式进行通信
         torch.distributed.init_process_group(**init_process_group_kwargs)
         inprocess_restart.maybe_force_nccl_backend_init(device_id)
 
@@ -357,6 +360,7 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
                     stacklevel=2
                 )
             
+            # NOTE: 1.2.2 设置模型并行，数据并行等各种进程组，每个 rank 对应进程都有自己全局变量
             mpu.initialize_model_parallel(
                 args.tensor_model_parallel_size,
                 args.pipeline_model_parallel_size,
