@@ -154,12 +154,15 @@ def initialize_megatron(
         mpu.set_tensor_model_parallel_rank(args.rank)
         return finish_mpu_init
     else:
+        # NOTE: 1. mpu 初始化
         # Megatron's MPU is the master. Complete initialization right away.
         finish_mpu_init()
 
+        # NOTE: 2. 自动恢复初始化
         # Autoresume.
         _init_autoresume()
 
+        # NOTE: 3. 编译依赖
         # Compile dependencies.
         _compile_dependencies()
 
@@ -300,6 +303,7 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
     """Initialize torch.distributed and core model parallel."""
     args = get_args()
 
+    # NOTE: 当前进程所在的node上可使用的GPU的数量
     device_count = torch.cuda.device_count()
     if torch.distributed.is_initialized():
 
@@ -308,7 +312,9 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
                 "torch distributed is already initialized, " "skipping initialization ...",
                 flush=True,
             )
+        # NOTE: 取得当前进程的全局序号
         args.rank = torch.distributed.get_rank()
+        # NOTE: 取得全局进程的个数
         args.world_size = torch.distributed.get_world_size()
 
     else:
@@ -335,7 +341,7 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
             'timeout': timedelta(minutes=args.distributed_timeout_minutes),
         }
 
-        # NOTE: 1.2.1 初始化分布式环境，会生成一个进程组，同组内进程训练同一个模型，也能确定用什么方式进行通信
+        # NOTE: 1.2.1 初始化分布式环境
         torch.distributed.init_process_group(**init_process_group_kwargs)
         inprocess_restart.maybe_force_nccl_backend_init(device_id)
 

@@ -72,6 +72,7 @@ def broadcast_from_last_pipeline_stage(size, dtype, tensor=None):
     # Get the group and corresponding source rank.
     src = mpu.get_pipeline_model_parallel_last_rank()
     group = mpu.get_pipeline_model_parallel_group()
+    # NOTE: 使用 torch 通信后端
     torch.distributed.broadcast(tensor, src, group)
 
     return tensor
