@@ -17,10 +17,12 @@ else:
 
 def _reduce(input_, group):
     """All-reduce the input tensor across model parallel group."""
+    # NOTE: 对输入 input_ 进行 all_reduce 操作
     assert group is not None, "group should not be None"
 
     # Bypass the function if we are using only 1 GPU.
     if group.size() == 1:
+        # NOTE: 如果 world_size 为 1，则直接返回
         return input_
 
     # All-reduce.
@@ -32,6 +34,7 @@ def _reduce(input_, group):
 def _split_along_last_dim(input_, group):
     """Split the tensor along its last dimension and keep the
     corresponding slice."""
+    # NOTE: 在输入矩阵的最后一维，对矩阵进行切分为 world_size 个子矩阵，并按照当前的节点的 rank 编号返回对应切分后的子矩阵
     assert group is not None, "group should not be None"
 
     world_size = group.size()
@@ -44,6 +47,7 @@ def _split_along_last_dim(input_, group):
 
     # Note: torch.split does not create contiguous tensors by default.
     rank = group.rank()
+    # NOTE: 切分后进行张量内存连续化
     output = input_list[rank].contiguous()
 
     return output
@@ -52,6 +56,7 @@ def _split_along_last_dim(input_, group):
 def _split_along_first_dim(input_, group):
     """Split the tensor along its first dimension and keep the
     corresponding slice."""
+    # NOTE: 在输入矩阵的第一维，对矩阵进行切分为 world_size 个子矩阵，并按照当前的节点的 rank 编号返回对应切分后的子矩阵
     assert group is not None, "group should not be None"
 
     world_size = group.size()
@@ -66,6 +71,7 @@ def _split_along_first_dim(input_, group):
     ), "First dimension of the tensor should be divisible by tensor parallel size"
     local_dim_size = dim_size // world_size
     rank = group.rank()
+    # NOTE: 由于矩阵是顺序存储的，先按rank号计算每个子矩阵的偏移，然后基于偏移计算输出
     dim_offset = rank * local_dim_size
 
     output = input_[dim_offset : dim_offset + local_dim_size].contiguous()
@@ -75,6 +81,7 @@ def _split_along_first_dim(input_, group):
 
 def _gather_along_last_dim(input_, group):
     """Gather tensors and concatinate along the last dimension."""
+    # NOTE: 一个tensor并行通信组内，在最后一个维度上进行矩阵拼接操作
 
     world_size = group.size()
     # Bypass the function if we are using only 1 GPU.
@@ -87,6 +94,8 @@ def _gather_along_last_dim(input_, group):
     output = torch.empty(dim_size, dtype=input_.dtype, device=torch.cuda.current_device())
     dist_all_gather_func(output, input_.contiguous(), group=group)
     tensor_list = output.chunk(world_size, dim=0)
+    # NOTE: 通过torch.cat在最后一维上进行拼接操作
+    # 比如 rank 为 2 的时候，两个大小为 4 × 5 × 3 的矩阵拼接为一个大小为 4 × 5 × 6 的矩阵
     output = torch.cat(tensor_list, dim=-1).contiguous()
 
     return output
@@ -120,6 +129,7 @@ def _gather_along_first_dim(input_, group, output_split_sizes=None, use_global_b
     Returns:
         torch.Tensor: Gathered tensor.
     """
+    # NOTE: 一个tensor并行通信组内，在第一个维度上进行矩阵拼接操作
 
     assert group is not None, "group should not be None"
     world_size = group.size()
@@ -157,6 +167,9 @@ def _reduce_scatter_along_first_dim(input_, group, input_split_sizes=None, use_g
             the input splits along the first dimension for each rank. If None,
             equal splitting is assumed. Default: None.
     """
+    # NOTE: 一个tensor并行通信组内，在第一个维度上进行reduce_scatter操作
+    # reduce_scatter返回的结果是当前rank上的结果
+    # 比如 rank 为 2 的时候，大小为 4 × 5 × 6 的矩阵经过 reduce_scatter 后，结果返回为一个大小为 2 × 5 × 6 的矩阵
     assert group is not None, "group should not be None"
     world_size = group.size()
     # Bypass the function if we are using only 1 GPU.
@@ -193,6 +206,8 @@ def _reduce_scatter_along_first_dim(input_, group, input_split_sizes=None, use_g
 class _CopyToModelParallelRegion(torch.autograd.Function):
     """Pass the input to the model parallel region."""
 
+    # NOTE: 对应 Column Parallel Linear Layer 中的 f 函数
+
     @staticmethod
     def symbolic(graph, input_, group):
         """Symbolic function for tracing."""
@@ -201,18 +216,22 @@ class _CopyToModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, group):
         """Forward function."""
+        # NOTE: 在 tensor 并行中前向是复制输入
         ctx.group = group
         return input_
 
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 在 tensor 并行中反向是 all_reduce 操作
         return _reduce(grad_output, ctx.group), None
 
 
 class _ReduceFromModelParallelRegion(torch.autograd.Function):
     """All-reduce the input from the model parallel region."""
 
+    # NOTE: 对应 Column Parallel Linear Layer 中的 g 函数
+
     @staticmethod
     def symbolic(graph, input_, group):
         """Symbolic function for tracing."""
@@ -221,17 +240,21 @@ class _ReduceFromModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, group):
         """Forward function."""
+        # NOTE: 在 tensor 并行中前向是 all_reduce 操作
         return _reduce(input_, group)
 
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 在 tensor 并行中反向是 copy 梯度操作
         return grad_output, None
 
 
 class _ScatterToModelParallelRegion(torch.autograd.Function):
     """Split the input and keep only the corresponding chuck to the rank."""
 
+    # NOTE: 对应 Row Parallel Linear Layer 中的 f 函数
+
     @staticmethod
     def symbolic(graph, input_, group):
         """Symbolic function for tracing."""
@@ -240,18 +263,22 @@ class _ScatterToModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, group):
         """Forward function."""
+        # NOTE: 在 tensor 并行中前向是 split 操作
         ctx.group = group
         return _split_along_last_dim(input_, group)
 
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 在 tensor 并行中反向是 all_gather 梯度操作
         return _gather_along_last_dim(grad_output, ctx.group), None
 
 
 class _GatherFromModelParallelRegion(torch.autograd.Function):
     """Gather the input from model parallel region and concatinate."""
 
+    # NOTE: 对应 Column Parallel Linear Layer 中的 g 函数
+
     @staticmethod
     def symbolic(graph, input_, group):
         """Symbolic function for tracing."""
@@ -260,18 +287,22 @@ class _GatherFromModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, group):
         """Forward function."""
+        # NOTE: 在 tensor 并行中前向是 all_gather 操作
         ctx.group = group
         return _gather_along_last_dim(input_, group)
 
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 在 tensor 并行中反向是 split 梯度操作
         return _split_along_last_dim(grad_output, ctx.group), None
 
 
 class _ScatterToSequenceParallelRegion(torch.autograd.Function):
     """Split the input and keep only the corresponding chuck to the rank."""
 
+    # NOTE: 用于 mbedding 层的 parallel 并行
+
     @staticmethod
     def symbolic(graph, input_, group):
         """Symbolic function for tracing."""
@@ -280,17 +311,21 @@ class _ScatterToSequenceParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, group):
         """Forward function."""
+        # NOTE: 前向是 split 操作
         ctx.group = group
         return _split_along_first_dim(input_, group)
 
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 反向是 all_gather 梯度操作
         return _gather_along_first_dim(grad_output, ctx.group), None
 
 
 class _GatherFromSequenceParallelRegion(torch.autograd.Function):
     """Gather the input from sequence parallel region and concatinate."""
+
+    # NOTE: 对应 Sequence Parallel Linear Layer 中的 g 函数
 
     @staticmethod
     def symbolic(
@@ -314,6 +349,7 @@ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
         use_global_buffer=False,
     ):
         """Forward function."""
+        # NOTE: 在 sequence 并行中前向是 all_gather 操作
         ctx.tensor_parallel_output_grad = tensor_parallel_output_grad
         ctx.group = group
         ctx.output_split_sizes = output_split_sizes
@@ -323,6 +359,7 @@ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 在 sequence 并行中反向是 reduce_scatter 梯度操作
         tensor_parallel_output_grad = ctx.tensor_parallel_output_grad
 
         # If the computation graph after the gather operation is
@@ -347,6 +384,8 @@ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
 class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
     """Reduce scatter the input from the model parallel region."""
 
+    # NOTE: 对应 Sequence Parallel Linear Layer 中的 \overline{g}  函数
+
     @staticmethod
     def symbolic(graph, input_, group, input_split_sizes=None, use_global_buffer=False):
         """Symbolic function for tracing."""
@@ -355,6 +394,7 @@ class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_, group, input_split_sizes=None, use_global_buffer=False):
         """Forward function."""
+        # NOTE: 在 sequence 并行中前向是 reduce_scatter 操作
         ctx.group = group
         ctx.input_split_sizes = input_split_sizes
         ctx.use_global_buffer = use_global_buffer
@@ -363,6 +403,7 @@ class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
+        # NOTE: 在 sequence 并行中反向是 all_gather 梯度操作
         input_split_sizes = ctx.input_split_sizes
         use_global_buffer = ctx.use_global_buffer
         return (

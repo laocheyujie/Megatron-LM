@@ -712,6 +712,7 @@ def initialize_model_parallel(
         * encoder_pipeline_model_parallel_size
         * context_parallel_size
     )
+    # NOTE: MP = TP * PP * CP
     decoder_model_size = (
         tensor_model_parallel_size * pipeline_model_parallel_size * context_parallel_size
     )
@@ -792,6 +793,7 @@ def initialize_model_parallel(
     expert_tensor_model_pipeline_parallel_size = (
         expert_tensor_parallel_size * expert_model_parallel_size * pipeline_model_parallel_size
     )
+    # NOTE: DP of MoE = world_size / (TP * EP * PP)
     expert_data_parallel_size = decoder_world_size // expert_tensor_model_pipeline_parallel_size
     if decoder_world_size % expert_tensor_model_pipeline_parallel_size != 0:
         raise RuntimeError(
@@ -876,6 +878,7 @@ def initialize_model_parallel(
 
     timeout = timedelta(minutes=distributed_timeout_minutes)
 
+    # NOTE: KEY 设置 DP 组
     # Build the data-parallel groups.
     global _DATA_PARALLEL_GROUP
     global _DATA_PARALLEL_GROUP_GLOO
@@ -975,6 +978,7 @@ def initialize_model_parallel(
         os.environ["NCCL_COLLNET_ENABLE"] = "0"
 
     for ranks in generator_wrapper('dp'):
+        # NOTE: 设置 DP 组
         group = create_group(
             ranks,
             timeout=timeout,
@@ -992,11 +996,13 @@ def initialize_model_parallel(
             _DATA_PARALLEL_GROUP_GLOO = group_gloo
             _DATA_PARALLEL_GLOBAL_RANKS = ranks
 
+    # NOTE: KEY 设置 CP 组
     # Build the context-parallel groups.
     global _CONTEXT_PARALLEL_GROUP
     global _CONTEXT_PARALLEL_GLOBAL_RANKS
     assert _CONTEXT_PARALLEL_GROUP is None, 'context parallel group is already initialized'
     for ranks in generator_wrapper('cp'):
+        # NOTE: 设置 CP 组
         group = create_group(
             ranks,
             timeout=timeout,
@@ -1021,11 +1027,13 @@ def initialize_model_parallel(
             if rank in ranks:
                 _HIERARCHICAL_CONTEXT_PARALLEL_GROUPS = hierarchical_groups
 
+    # NOTE: KEY 设置 MP 组
     # Build the model-parallel groups.
     global _MODEL_PARALLEL_GROUP
     global _MODEL_PARALLEL_GLOBAL_RANKS
     assert _MODEL_PARALLEL_GROUP is None, 'model parallel group is already initialized'
     for ranks in generator_wrapper('tp-pp'):
+        # NOTE: 设置 MP 组
         group = create_group(
             ranks,
             timeout=timeout,
@@ -1036,6 +1044,7 @@ def initialize_model_parallel(
             _MODEL_PARALLEL_GROUP = group
             _MODEL_PARALLEL_GLOBAL_RANKS = ranks
 
+    # NOTE: KEY 设置 TP 组
     # Build the tensor model-parallel groups.
     global _TENSOR_MODEL_PARALLEL_GROUP
     global _TENSOR_MODEL_PARALLEL_GLOBAL_RANKS
@@ -1043,6 +1052,7 @@ def initialize_model_parallel(
         _TENSOR_MODEL_PARALLEL_GROUP is None
     ), 'tensor model parallel group is already initialized'
     for ranks in generator_wrapper('tp'):
+        # NOTE: 设置 TP 组
         group = create_group(
             ranks,
             timeout=timeout,
@@ -1053,6 +1063,7 @@ def initialize_model_parallel(
             _TENSOR_MODEL_PARALLEL_GROUP = group
             _TENSOR_MODEL_PARALLEL_GLOBAL_RANKS = ranks
 
+    # NOTE: KEY 设置 PP 组 + embedding 组
     # Build the pipeline model-parallel groups and embedding groups
     # (first and last rank in each pipeline model-parallel group).
     global _PIPELINE_MODEL_PARALLEL_GROUP
@@ -1119,6 +1130,7 @@ def initialize_model_parallel(
         os.environ['UCC_CL_BASIC_TLS'] = '^sharp,nccl'
 
     for ranks in generator_wrapper('pp'):
+        # NOTE: 设置 PP 组
         group = create_group(
             ranks,
             timeout=timeout,
@@ -1147,6 +1159,7 @@ def initialize_model_parallel(
                 _PIPELINE_MODEL_PARALLEL_GROUP = [_PIPELINE_MODEL_PARALLEL_GROUP, group]
                 _PIPELINE_GLOBAL_RANKS = [_PIPELINE_GLOBAL_RANKS, ranks]
 
+        # NOTE: KEY 设置 embedding 组
         embedding_ranks = get_embedding_ranks(ranks)
         group = create_group(
             embedding_ranks,
@@ -1598,6 +1611,7 @@ def set_pipeline_model_parallel_split_rank(rank):
 
 def get_tensor_model_parallel_rank():
     """Return caller's rank for the tensor-model-parallel group."""
+    # NOTE: 获取当前节点所在 tensor 并行组中的 rank 号
     global _MPU_TENSOR_MODEL_PARALLEL_RANK
     if _MPU_TENSOR_MODEL_PARALLEL_RANK is not None:
         return _MPU_TENSOR_MODEL_PARALLEL_RANK
@@ -1632,21 +1646,31 @@ def get_pipeline_model_parallel_split_rank():
 
 def is_pipeline_first_stage(ignore_virtual=True, vp_stage=None):
     """Return True if in the first pipeline model-parallel stage, False otherwise."""
+    # NOTE: 判断当前 rank 是否为 pipeline 模型并行的第一个 stage
+    # NOTE: 以2机16卡，TP=2, PP=4, DP=2为例, 对应pipeline通信组为
+    # [g0, g4, g8, g12], [g1, g5, g9, g13], [g2, g6, g10, g14], [g3, g7, g11, g15]
+    # 这里的 g0, g1, g2, g3 对应的 local_rank 都是 0，也就是会处理 pipeline 模型并行的第一阶段
     if not ignore_virtual and get_virtual_pipeline_model_parallel_world_size() is not None:
         assert vp_stage is not None, "vp_stage must be passed if virtual pipeline is enabled"
 
         if vp_stage != 0:
             return False
+    # NOTE: 判断在 pipeline 并行组中当前 local_rank 是否为 0
     return get_pipeline_model_parallel_rank() == 0
 
 
 def is_pipeline_last_stage(ignore_virtual=True, vp_stage=None):
     """Return True if in the last pipeline-model-parallel stage, False otherwise."""
+    # NOTE: 判断当前 rank 是否为 pipeline 模型并行的最后一个 stage
+    # NOTE: 以2机16卡，TP=2, PP=4, DP=2为例, 对应pipeline通信组为
+    # [g0, g4, g8, g12], [g1, g5, g9, g13], [g2, g6, g10, g14], [g3, g7, g11, g15]
+    # 对应的 local_rank 是 g1, g13, g14, g15
     if not ignore_virtual and get_virtual_pipeline_model_parallel_world_size() is not None:
         assert vp_stage is not None, "vp_stage must be passed if virtual pipeline is enabled"
 
         if vp_stage != (get_virtual_pipeline_model_parallel_world_size() - 1):
             return False
+    # NOTE: 判断在 pipeline 并行组中当前 local_rank 是否为最后一个
     return get_pipeline_model_parallel_rank() == (get_pipeline_model_parallel_world_size() - 1)
 
 
@@ -1879,6 +1903,8 @@ def get_virtual_pipeline_model_parallel_world_size():
 def get_tensor_model_parallel_src_rank():
     """Calculate the global rank corresponding to the first local rank
     in the tensor model parallel group."""
+    # NOTE: 根据当前节点的 global_rank 来获取所在 tensor 模型并行组中的第一个 rank
+    # NOTE: 比如以 Tensor 并行 TP=4 为例，假设 rank_2 所在的 tensor 模型并行组为 [g0, g1, g2, g3]，那么对应的 src_rank 即为 g0
     assert (
         _TENSOR_MODEL_PARALLEL_GLOBAL_RANKS is not None
     ), "Tensor model parallel group is not initialized"

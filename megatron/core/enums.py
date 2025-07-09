@@ -8,6 +8,7 @@ class ModelType(enum.Enum):
 
     encoder_or_decoder = 1
     encoder_and_decoder = 2
+    # NOTE: Retrieval-Enhanced TRansfOrmer (RETRO)
     retro_encoder = 3
     retro_decoder = 4
 

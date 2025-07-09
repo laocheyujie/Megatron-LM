@@ -72,24 +72,30 @@ def broadcast_data(keys, data, datatype, tp_group=None):
                   with keys.
         tp_group: the tensor model parallel group to broadcast to.
     """
+    # NOTE: 用于把每一个 tensor 模型并行组中 rank0 的数据广播到该组其他 rank 节点
     # Build (key, size) and (key, number of elements) dictionaries along
     # with the total number of elements on all ranks.
+    # NOTE: 构建 {key: 对应tensor的shape_size}, {key: 对应tensor中元素的个数}, {key: 所有总的元素个数} 字典
     key_size, key_numel, total_numel = _build_key_size_numel_dictionaries(keys, data)
     tp_group = get_tensor_model_parallel_group_if_none(tp_group)
     # Pack on rank zero.
+    # NOTE: 在 rank0 上对所有要 broadcast 的 tensor 数据进行打包操作，合并成一维的 tensor
     if tp_group.rank() == 0:
         # Check that all keys have the same data type.
         _check_data_types(keys, data, datatype)
         # Flatten the data associated with the keys
         flatten_data = torch.cat([data[key].cuda().contiguous().view(-1) for key in keys], dim=0)
     else:
+        # NOTE: 在其他 rank 节点上初始化空的 tensor，用于接收广播的数据
         flatten_data = torch.empty(total_numel, device=torch.cuda.current_device(), dtype=datatype)
 
     # Broadcast
     group_ranks = torch.distributed.get_process_group_ranks(group=tp_group)
+    # NOTE: 调用 torch.distributed.broadcast 函数发送数据，每个 rank 节点上都有一份完整的 pack 过后的数据
     torch.distributed.broadcast(flatten_data, group_ranks[0], group=tp_group)
 
     # Unpack
+    # NOTE: unpack 收到的数据，根据之前的 key_size 恢复还原之前每个 key 对应的 tensor
     output = {}
     offset = 0
     for key in keys:

@@ -460,6 +460,7 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         ctx.tp_group = tp_group
 
         if sequence_parallel:
+            # NOTE: 在前向中判断如果是 sequence 并行则进行 all_gather 操作
             dim_size = list(input.size())
             dim_size[0] = dim_size[0] * tp_group.size()
 
@@ -467,8 +468,10 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
             dist_all_gather_func(all_gather_buffer, input, group=tp_group)
             total_input = all_gather_buffer
         else:
+            # NOTE: 如果没有则直接使用输入的 input_
             total_input = input
 
+        # NOTE: 输入和权重相乘
         output = torch.matmul(total_input, weight.t())
         if bias is not None:
             output = output + bias
@@ -512,6 +515,7 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
                 total_input = all_gather_buffer
             else:
                 total_input = input
+        # NOTE: 先计算当前输入的梯度
         grad_input = grad_output.matmul(weight)
 
         if ctx.sequence_parallel and wgrad_compute:
@@ -959,8 +963,10 @@ class ColumnParallelLinear(torch.nn.Module):
             or self.explicit_expert_comm
             or self.disable_grad_reduce
         ):
+            # NOTE: 如果是 parallel_allreduce or sequence 并行则直接使用输入的input_
             input_parallel = input_
         else:
+            # NOTE: 如果是 tensor 并行则进行输入矩阵 input_ 的复制 (这样可求导)
             input_parallel = copy_to_tensor_model_parallel_region(input_, group=self.tp_group)
 
         if self.config.defer_embedding_wgrad_compute:
@@ -1012,9 +1018,12 @@ class ColumnParallelLinear(torch.nn.Module):
 
         if gather_output:
             # All-gather across the partitions.
+            # NOTE: 如果需要进行输出的合并则打开 self.gather_output 进行结果的 gather_from_tensor_model_parallel_region 操作
             output = gather_from_tensor_model_parallel_region(output_parallel, group=self.tp_group)
         else:
+            # NOTE: 直接返回结果
             output = output_parallel
+        # NOTE: 对于有 bias 的情况，如果需要进行 bias 相关 fusion 操作，则打开 self.skip_bias_add 在结果中将 bias 一起返回
         output_bias = self.bias if self.skip_bias_add else None
         return output, output_bias
 
@@ -1204,13 +1213,17 @@ class RowParallelLinear(torch.nn.Module):
             - output
             - bias
         """
+        # NOTE: 在 forward(self, input_) 函数实现中，input_ 的维度是3维，分别是 [sequence, batch, hidden]
 
         # Set up backprop all-reduce.
         if self.input_is_parallel:
+            # NOTE: 如果使用了 input_is_parallel=True, 则直接使用输入
             input_parallel = input_
         else:
+            # NOTE: 否则会通过 scatter_to_tensor_model_parallel_region 对输入进行 scatter 操作
             assert not self.sequence_parallel
             input_parallel = scatter_to_tensor_model_parallel_region(input_, group=self.tp_group)
+
         # Matrix multiply.
         if not self.weight.requires_grad:
             self._forward_impl = linear_with_frozen_weight
@@ -1244,11 +1257,14 @@ class RowParallelLinear(torch.nn.Module):
             assert self.skip_bias_add
             output_ = output_parallel
         elif self.sequence_parallel:
+            # NOTE: 如果是 sequence 并行则使用 reduce_scatter 进行结果汇总
             output_ = reduce_scatter_to_sequence_parallel_region(
                 output_parallel, group=self.tp_group
             )
         else:
+            # NOTE: 如果是 tensor 并行则使用 all_reduce 进行结果汇总
             output_ = reduce_from_tensor_model_parallel_region(output_parallel, group=self.tp_group)
+        # NOTE: 如果需要进行 bias 相关 fusion 操作，则打开 self.skip_bias_add 在结果中将 bias 一起返回
         if not self.skip_bias_add:
             output = (output_ + self.bias) if self.bias is not None else output_
             output_bias = None
