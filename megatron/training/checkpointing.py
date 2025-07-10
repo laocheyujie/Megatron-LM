@@ -1190,20 +1190,6 @@ def load_args_from_checkpoint(
     return args, checkpoint_args
 
 
-def fix_fp8_params_lose_precision_when_loading_dist_ckpt(state_dict):
-    """
-    When "--fp8-param-gather" and "--use-dist-ckpt" are both enabled, the state dict read from
-    dist-checkpoint loses precision (the weights read from checkpoint go through the process of
-    bf16/fp16 -> fp8 -> bf16/fp16). This function is implemented to solve this problem.
-    When "--fp8-param-gather" is disabled, this function doesn't modify anything.
-    """
-    for key in state_dict.keys():
-        if key.startswith('model'):
-            for _, sharded_tensor in state_dict[key].items():
-                if is_float8tensor(sharded_tensor.data):
-                    sharded_tensor.data = dequantize_fp8_tensor(sharded_tensor.data).cpu()
-
-
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', strict=True,
                     checkpointing_context=None, skip_load_to_model_and_opt=False):
     """Load a model checkpoint and return the iteration.
@@ -1375,9 +1361,6 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
                 optim_sd_kwargs=optim_sd_kwargs, model_sd_kwargs=model_sd_kwargs,
                 rerun_state=gen_sd_rerun_state
             )
-
-        # When "--fp8-param-gather" is disabled, this function doesn't modify anything.
-        fix_fp8_params_lose_precision_when_loading_dist_ckpt(load_kwargs['sharded_state_dict'])
     elif args.ckpt_format == "torch_dcp":
         model_sd = model[0].state_dict()
         optimizer_sd = optimizer.state_dict(is_loading=True)
@@ -1443,19 +1426,27 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
     else:
         print_rank_0('could not find arguments in the checkpoint ...')
 
+    def load_model_state_dict(module, state_dict, strict: bool):
+        """Helper function to load state dict with fallback for missing extra states."""
+        try:
+            module.load_state_dict(state_dict, strict=strict)
+        except Exception as e:
+            if strict:
+                # Fallback support for backward compatibility breaking changes in TransformerEngine
+                load_return = module.load_state_dict(state_dict, strict=False)
+                print(f"load_return: {load_return}")
     # Model.
     strict = False if args.retro_add_retriever else strict
     if not skip_load_to_model_and_opt:
         if len(ddp_model) == 1:
-            ddp_model[0].load_state_dict(state_dict['model'], strict=strict)
+            load_model_state_dict(ddp_model[0], state_dict['model'], strict)
         else:
             for i in range(len(ddp_model)):
                 # If there is no corresponding model in the state_dict, it will be ignored.
                 # It means that this is an empty stage.
                 if 'model%d' % i not in state_dict:
                     continue
-                ddp_model[i].load_state_dict(state_dict['model%d' % i], strict=strict)
-
+                load_model_state_dict(ddp_model[i], state_dict['model%d' % i], strict)
     # Fix up query/key/value matrix ordering if needed.
     checkpoint_version = get_checkpoint_version()
     print_rank_0(f' checkpoint version {checkpoint_version}')
@@ -1499,7 +1490,10 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
             raise e
     else:
         if (args.fp16 or args.bf16) and optimizer is not None:
-            optimizer.reload_model_params()
+            if args.load_main_params_from_ckpt:
+                optimizer.reload_model_params(state_dict=state_dict)
+            else:
+                optimizer.reload_model_params()
 
     # rerun state
     try:
