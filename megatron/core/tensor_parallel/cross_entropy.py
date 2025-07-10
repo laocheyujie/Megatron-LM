@@ -42,9 +42,12 @@ class VocabParallelCrossEntropy:
         """Calculates predicted logits."""
 
         # In-place subtraction reduces memory pressure.
+        # NOTE: 原始 GPU 上维护的 logits 减去每行最大值，避免溢出
         vocab_parallel_logits -= logits_max.unsqueeze(dim=-1)
 
         # Create a mask of valid vocab ids (1 means it needs to be masked).
+        # NOTE: 基于真值，取出每个 token 在真值位置上的 logit
+        # NOTE: target = (b, s)
         target_mask = (target < vocab_start_index) | (target >= vocab_end_index)
         masked_target = target.clone() - vocab_start_index
         masked_target[target_mask] = 0
@@ -52,18 +55,22 @@ class VocabParallelCrossEntropy:
         # Get predicted-logits = logits[target].
         # For Simplicity, we convert logits to a 2-D tensor with size
         # [*, partition-vocab-size] and target to a 1-D tensor of size [*].
+        # NOTE: 这块 GPU 上 logits 最后一维的大小，等于所维护的词表的大小（v/N）
         partition_vocab_size = vocab_parallel_logits.size()[-1]
-        logits_2d = vocab_parallel_logits.view(-1, partition_vocab_size)
-        masked_target_1d = masked_target.view(-1)
-        arange_1d = torch.arange(start=0, end=logits_2d.size()[0], device=logits_2d.device)
-        predicted_logits_1d = logits_2d[arange_1d, masked_target_1d]
+        logits_2d = vocab_parallel_logits.view(-1, partition_vocab_size)                     # (b*s, v/N)
+        # NOTE: masked_target_1d: 取出 logit
+        masked_target_1d = masked_target.view(-1)                                            # (b*s)
+        # NOTE: arange_1d: 取出所有的行
+        arange_1d = torch.arange(start=0, end=logits_2d.size()[0], device=logits_2d.device)  # [b*s]
+        # NOTE: tensor 的切片操作
+        predicted_logits_1d = logits_2d[arange_1d, masked_target_1d]                         # (b*s)
         predicted_logits_1d = predicted_logits_1d.clone().contiguous()
-        predicted_logits = predicted_logits_1d.view_as(target)
+        predicted_logits = predicted_logits_1d.view_as(target)                               # (b, s)
         predicted_logits[target_mask] = 0.0
 
-        exp_logits = vocab_parallel_logits
+        exp_logits = vocab_parallel_logits                                                   # (b, s, v/N)
         torch.exp(vocab_parallel_logits, out=exp_logits)
-        sum_exp_logits = exp_logits.sum(dim=-1)
+        sum_exp_logits = exp_logits.sum(dim=-1)                                              # (b, s)
 
         return target_mask, masked_target_1d, predicted_logits, sum_exp_logits, exp_logits
 
@@ -73,8 +80,9 @@ class VocabParallelCrossEntropy:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Calculates cross entropy loss."""
 
+        # NOTE: 计算 Loss
         # Loss = log(sum(exp(logits))) - predicted-logit.
-        loss = torch.log(sum_exp_logits) - predicted_logits
+        loss = torch.log(sum_exp_logits) - predicted_logits  # (b, s)
 
         # Normalize and optionally smooth logits
         exp_logits.div_(sum_exp_logits.unsqueeze(dim=-1))
@@ -127,6 +135,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         vocab_parallel_logits, logits_max = VocabParallelCrossEntropy.calculate_logits_max(
             vocab_parallel_logits
         )
+        # NOTE: 找全局最大值
         torch.distributed.all_reduce(
             logits_max, op=torch.distributed.ReduceOp.MAX, group=get_tensor_model_parallel_group()
         )
@@ -145,6 +154,7 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         )
 
         # All reduce is needed to get the chunks from other GPUs.
+        # NOTE: allreduce 之后得到的 logit 矩阵为 (b, s)，每一个位置表示对应真值位置的预测 logit
         torch.distributed.all_reduce(
             predicted_logits,
             op=torch.distributed.ReduceOp.SUM,

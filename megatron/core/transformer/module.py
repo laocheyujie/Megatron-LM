@@ -50,6 +50,8 @@ class MegatronModule(torch.nn.Module):
         Returns:
             _type_: _description_
         """
+        # NOTE: 模型训练中，及时将参数保存到指定位置（设置checkpoint），
+        # NOTE: 这样在训练出问题时，可以从 checkpoint 点重新 load 参数，继续训练
 
         return self.state_dict(prefix=prefix, keep_vars=keep_vars)
 

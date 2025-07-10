@@ -294,7 +294,7 @@ class _GatherFromModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """Backward function."""
-        # NOTE: 在 tensor 并行中反向是 split 梯度操作
+        # NOTE: 在 tensor 并行中反向是沿着列方向做 split 梯度操作
         return _split_along_last_dim(grad_output, ctx.group), None
 
 

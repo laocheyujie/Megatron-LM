@@ -804,6 +804,7 @@ def pretrain(
     # Model, optimizer, and learning rate.
     timers('model-and-optimizer-setup', log_level=0).start(barrier=True)
     app_metrics['app_build_optimizer_start_time'] = one_logger_utils.get_timestamp_in_ms()
+    # NOTE: 2. 模型并行：定义模型架构，并切割模型，最核心的函数
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(
         model_provider, model_type, checkpointing_context=checkpointing_context
     )
@@ -821,6 +822,7 @@ def pretrain(
         valid_data_iterator = []
         test_data_iterator = []
         for i in range(len(model)):
+            # NOTE: 3. 构造 train/val/test 数据集
             iterators = build_train_valid_test_data_iterators(train_valid_test_dataset_provider)
             train_data_iterator.append(iterators[0])
             valid_data_iterator.append(iterators[1])
@@ -862,6 +864,7 @@ def pretrain(
 
         iteration = 0
         if args.do_train and args.train_iters > 0:
+            # NOTE: 4. 训练
             iteration, num_floating_point_operations_so_far = train(
                 forward_step_func,
                 model,
@@ -984,10 +987,12 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
 
     # Build model.
     def build_model():
+        # NOTE: 1. 定义并构建 CPU 版模型
         if (
             mpu.get_pipeline_model_parallel_world_size() > 1
             and args.virtual_pipeline_model_parallel_size is not None
         ):
+            # NOTE: 1.1 当分布式进行框架采用 virtual pipeline
             if model_type == ModelType.encoder_and_decoder:
                 assert (
                     args.encoder_pipeline_model_parallel_size == 0
@@ -1003,7 +1008,10 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                 this_model.vp_stage = i
                 model.append(this_model)
         else:
+            # NOTE: 1.2 其余情况
+            # NOTE: 判断当前进程是否是 PP 组的第一个进程
             pre_process = mpu.is_pipeline_first_stage()
+            # NOTE: 判断当前进程是否是 PP 组的最后一个进程
             post_process = mpu.is_pipeline_last_stage()
             add_encoder = True
             add_decoder = True
@@ -1016,6 +1024,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                     post_process = (rank == (first_decoder_rank - 1)) or (rank == (world_size - 1))
                     add_encoder = mpu.is_inside_encoder(rank)
                     add_decoder = mpu.is_inside_decoder(rank)
+                # NOTE: 构建 CPU 版模型，核心函数
                 model = model_provider_func(
                     pre_process=pre_process,
                     post_process=post_process,
@@ -1023,6 +1032,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                     add_decoder=add_decoder,
                 )
             else:
+                # NOTE: 构建 CPU 版模型，核心函数
                 model = model_provider_func(pre_process=pre_process, post_process=post_process)
             model.model_type = model_type
         return model
@@ -1062,6 +1072,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     # GPU allocation.
     # For FSDP2, we don't allocate GPU memory here. We allocate GPU memory
     # in the fully_shard function of FSDP2 instead.
+    # NOTE: 2. 将模型从 CPU 搬运到 GPU 上
     if (
         not (args.use_torch_fsdp2 and args.use_cpu_initialization)
         and not args.init_model_with_meta_device
@@ -1070,6 +1081,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             model_module.cuda(torch.cuda.current_device())
 
     # Fp16 conversion.
+    # NOTE: fp16 转换（pytorch默认模型参数精度为 fp32，依需决定计算过程中是否要转成 fp16，节省显存）
     if args.fp16 or args.bf16:
         config = get_model_config(model[0])
         model = [Float16Module(config, model_module) for model_module in model]
@@ -1130,6 +1142,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
             if not ddp_config.overlap_grad_reduce:
                 ddp_config.bucket_size = None
 
+        # NOTE: 采用 pytorch 定义的 FSDP 或 DDP 或自定义的 FSDP 管理数据并行
         model = [
             DP(
                 config=config,
@@ -1220,7 +1233,7 @@ def setup_model_and_optimizer(
     timers = get_timers()
     one_logger = get_one_logger()
 
-    # NOTE: 重点，分布式并行启动 n 个进程，每个进程里有一个子模型
+    # NOTE: 1. 定义模型架构并切割模型，分布式并行启动 n 个进程，每个进程里有一个子模型
     model = get_model(model_provider_func, model_type)
     unwrapped_model = unwrap_model(model)
 
@@ -1230,6 +1243,7 @@ def setup_model_and_optimizer(
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
     config.timers = timers
+    # NOTE: 2. 设置 optimizer
     optimizer = get_megatron_optimizer(
         config,
         model,
@@ -1238,6 +1252,7 @@ def setup_model_and_optimizer(
         lr_mult,
         use_gloo_process_groups=args.enable_gloo_process_groups,
     )
+    # NOTE: 3. 设置学习率
     opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
 
     if args.moe_use_upcycling:
