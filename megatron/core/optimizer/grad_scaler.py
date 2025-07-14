@@ -11,6 +11,7 @@ import torch
 class MegatronGradScaler(ABC):
     def __init__(self, initial_scale: float):
         """Initialize scale value with the input initial scale."""
+        # NOTE: 初始化 loss_scale，同时规定 loss_scale 必须大于 0
         assert initial_scale > 0.0
         self._scale = torch.tensor([initial_scale], dtype=torch.float, device='cuda')
 
@@ -57,6 +58,7 @@ class DynamicGradScaler(MegatronGradScaler):
     Reduces loss scale by `backoff_factor` if `hysteresis` number of NaNs are seen in a row. Increases
     loss scale by `growth_factor` if NaNs are not seen for `growth_interval` iterations.
     """
+    # NOTE: 动态损失放大
 
     def __init__(
         self,
@@ -79,6 +81,20 @@ class DynamicGradScaler(MegatronGradScaler):
                 consecutive training iterations. Must be between 0 and 1.
             growth_interval (int): Number of training iterations of no NaNs before loss scale is increased.
             hysteresis (int): Number of training iterations of consecutive NaNs before loss scale is decreased.
+        """
+        """
+        NOTE: 
+        Params:
+            self.initial_scale: 表示初始化 loss scale
+            self.min_scale: 表示loss scale的最小值
+            self.growth_interval: 表示连续无梯度上溢的迭代次数
+            self.growth_factor: 当连续self.growth_interval次未出现梯度上溢时，
+                               就将loss scale扩大self.growth_factor倍
+            self.hysteresis: 表示最多允许出现梯度上溢的迭代次数
+            self.backoff_factor: 当累计出现self.hysteresis次梯度上溢的情况时（注意是累计不是连续），
+                                 则将loss scale缩小self.backoff_factor倍。
+                                 缩小公式为self._scale = torch.max(self._scale * self.backoff_factor, self.min_scale)。
+                                 缩小后重新开始计算梯度上溢的次数。
         """
         super(DynamicGradScaler, self).__init__(initial_scale)
 
@@ -109,20 +125,25 @@ class DynamicGradScaler(MegatronGradScaler):
         """
         Updates internal state in grad scaler based on whether NaNs are seen in grads or not.
         """
+        # NOTE: 更新 loss scale
 
         # If we have an inf/nan, growth tracker is set to 0
         # and hysterisis tracker is reduced by 1.
         if found_inf:
+            # NOTE: 一旦发现梯度溢出（inf/nan）的情况
             self._growth_tracker = 0
             self._hysteresis_tracker -= 1
             # Now if we are out of hysteresis count, scale down the loss.
             if self._hysteresis_tracker <= 0:
+                # NOTE: 如果 _hysteresis_tracker <= 0, 说明梯度溢出的次数已经超过了设定的阈值, 这时就要惩罚性地缩小 loss_scale
                 self._scale = torch.max(self._scale * self.backoff_factor, self.min_scale)
         else:
+            # NOTE: 如果没有发现梯度溢出 inf/nan
             # If there is no nan/inf, increment the growth tracker.
             self._growth_tracker += 1
             # If we have had enough consequitive intervals with no nan/inf:
             if self._growth_tracker == self.growth_interval:
+                # NOTE: 如果连续 self.growth_interval 次未出现梯度溢出，则将 loss_scale 扩大 self.growth_factor 倍
                 # Reset the tracker and hysteresis trackers,
                 self._growth_tracker = 0
                 self._hysteresis_tracker = self.hysteresis

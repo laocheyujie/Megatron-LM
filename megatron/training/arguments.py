@@ -444,6 +444,7 @@ def validate_args(args, defaults={}):
     del args.checkpoint_activations
 
     if args.recompute_activations:
+        # NOTE: 设置 recompute_activations 等同于 recompute_granularity 为 selective
         args.recompute_granularity = 'selective'
     del args.recompute_activations
 
@@ -798,6 +799,7 @@ def validate_args(args, defaults={}):
     if args.fp16_lm_cross_entropy:
         assert args.fp16, 'lm cross entropy in fp16 only support in fp16 mode.'
     if args.fp32_residual_connection:
+        # NOTE: 在计算残差连接的时候转为 fp32 再进行计算
         assert args.fp16 or args.bf16, \
             'residual connection in fp32 only supported when using fp16 or bf16.'
 
@@ -840,6 +842,7 @@ def validate_args(args, defaults={}):
             f'pytorch version is v{get_torch_version()}.'
 
     if args.recompute_granularity == 'selective':
+        # NOTE: 对于 selective 的 recompute_granularity 来说，不支持重计算方法的选择
         assert args.recompute_method is None, \
             'recompute method is not yet supported for ' \
             'selective recomputing granularity'
@@ -1730,9 +1733,12 @@ def _add_training_args(parser):
                        'corresponding dp_size) does not support current batch_size.'
                        'Old batch_size will be restored if training is re-started with'
                        'dp_size that divides batch_size // microbatch_size.')
+    # NOTE: 设置 recompute_activations 等同于 recompute_granularity 为 selective
+    # selective 运行效率更高，大部分场景只设置这个就可以,如果显存更紧张时，再通过 recompute-granularity 来进行 full 的设置
     group.add_argument('--recompute-activations', action='store_true',
                        help='recompute activation to allow for training '
                        'with larger models, sequences, and batch sizes.')
+    # NOTE: 支持不同颗粒度的重计算，设为 full 会重计算整个 transformer 层，设为 selective 只会重算 transformer 中的 core_attention 部分
     group.add_argument('--recompute-granularity', type=str, default=None,
                        choices=['full', 'selective'],
                        help='Checkpoint activations to allow for training '
@@ -1750,10 +1756,14 @@ def _add_training_args(parser):
     group.add_argument('--check-for-large-grads', action='store_true',
                        help='Check for unexpectedly large grads',
                        dest='check_for_large_grads')
+    # NOTE: 按 TP 并行度分开存储 activation
     group.add_argument('--distribute-saved-activations',
                        action='store_true',
                        help='If set, distribute recomputed activations '
                        'across model parallel group.')
+    # NOTE: uniform 计算会把所有的 transformer layer 分为若干组，分别把每组的 input activation 保存在内存中, GPU 显存不足时，可通过设大每个组内的 layer 数来运行更大的 model
+    # NOTE: block 是针对 pipeline 并行的每个 stage，checkpoint 部分 transformer layer 的 input activation, 剩余部分不进行 checkpoint 缓存
+    # 对于一个 pipeline stage 中有 8 层，当设为 5 时，前 5 层中每一层的 input activation 都会被缓存，后 3 层在反向的时候正常计算
     group.add_argument('--recompute-method', type=str, default=None,
                        choices=['uniform', 'block'],
                        help='1) uniform: uniformly divide the total number of '
@@ -1763,6 +1773,8 @@ def _add_training_args(parser):
                        'individual Transformer layers per pipeline stage and do the '
                        'rest without any recomputing at specified granularity'
                        'default) do not apply activations recompute to any layers')
+    # NOTE: 对于 uniform 类型，表示设置在每个重计算的 transformer layer group 中的层数, 默认为 1 表示对每一层 transformer layer 都分别进行 checkpoint
+    # NOTE: 对于 block 类型，设为 N 表示单个 pipeline stage 中的前 N 个 layers 会缓存 input activation
     group.add_argument('--recompute-num-layers', type=int, default=None,
                        help='1) uniform: the number of Transformer layers in each '
                        'uniformly divided recompute unit, '
@@ -2230,6 +2242,7 @@ def _add_mixed_precision_args(parser):
     group.add_argument('--accumulate-allreduce-grads-in-fp32',
                        action='store_true',
                        help='Gradient accumulation and all-reduce in fp32.')
+    # NOTE: 在计算 lm-cross-entropy 时默认是使用 fp32 来计算的，在开启 --fp16 选项的前提下可以通过指定 --fp16-lm-cross-entropy 来使用 fp16 计算 lm-loss-entropy
     group.add_argument('--fp16-lm-cross-entropy', action='store_true',
                        help='Move the cross entropy unreduced loss calculation'
                        'for lm head to fp16.')
@@ -2350,6 +2363,7 @@ def _add_distributed_args(parser):
     group.add_argument('--account-for-loss-in-pipeline-split', action='store_true',
                        default=False, help='If set, loss layer will be treated as a standard transformer'
                        'layer in the context of partition and placement for pipeline parallelism.')
+    # NOTE: 使用分布式优化器，将训练中的优化器状态均匀地分布到不同数据并行的 rank 结点上，相当于开启 ZERO-1 的训练
     group.add_argument('--use-distributed-optimizer', action='store_true',
                        help='Use distributed optimizer.')
     group.add_argument('--use-nccl-ub', action='store_true', dest='nccl_ub', 

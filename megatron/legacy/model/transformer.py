@@ -1625,6 +1625,7 @@ class ParallelTransformer(MegatronModule):
                 te_forward_kwargs['rotary_pos_emb'] = rotary_pos_emb
 
         if self.recompute_method == 'uniform':
+            # NOTE: 对于 uniform 方法来说，每次会过 self.recompute_num_layers 个 layer 保存一次 input activation
             # Uniformly divide the total number of Transformer layers and
             # checkpoint the input activation of each divided chunk.
             # A method to further reduce memory usage reducing checkpoints.
@@ -1649,6 +1650,7 @@ class ParallelTransformer(MegatronModule):
                 l += self.recompute_num_layers
 
         elif self.recompute_method == 'block':
+            # NOTE: 对于 block 方法，对于小于 self.recompute_num_layers 的 layer 执行 input activation 的 checkpoint, 对于大于等于 self.recompute_num_layers 的 layer 执行原有操作
             # Checkpoint the input activation of only a set number of individual
             # Transformer layers and skip the rest.
             # A method fully use the device memory removing redundant re-computation.
@@ -1758,6 +1760,7 @@ class ParallelTransformer(MegatronModule):
                 self.num_microbatches_in_previous_step = get_num_microbatches()
                 is_first_microbatch = self.microbatch_count % get_num_microbatches() == 0
 
+                # NOTE: 在 forward 中如果 recompute_granularity 为 full 的话会对整个前向进行 checkpoint 操作
                 # Forward pass.
                 if self.recompute_granularity == 'full':
                     hidden_states = self._checkpointed_forward(hidden_states,

@@ -114,10 +114,13 @@ def get_forward_backward_func():
     pipeline_model_parallel_size = parallel_state.get_pipeline_model_parallel_world_size()
     if pipeline_model_parallel_size > 1:
         if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+            # NOTE: 在 Megatron-2 论文中提到的基于 PipeDream-2BW 的改进，在每个卡上支持多个 stage
             forward_backward_func = forward_backward_pipelining_with_interleaving
         else:
+            # NOTE: 采用的 PipeDream-2BW 的 1F1B 的训练
             forward_backward_func = forward_backward_pipelining_without_interleaving
     else:
+        # NOTE: 没用使用 pipeline 并行
         forward_backward_func = forward_backward_no_pipelining
     return forward_backward_func
 
@@ -469,6 +472,9 @@ def forward_backward_no_pipelining(
 
     See get_forward_backward_func() for argument details
     """
+    # NOTE: forward_backward_no_pipelining中以microbatch为粒度，先进行前向计算，紧跟着进行反向计算
+    # 前 n-1 个 microbatch 不会进行同步操作，直到最后一个再进行同步
+    # 这个过程中不涉及跨 stage 的通信，同时也不支持 sequence 并行，前向计算的 loss 会存在 forward_data_store 中返回
 
     if isinstance(model, list):
         assert len(model) == 1, "non-pipeline-parallel schedule does not support model chunking"
@@ -495,6 +501,7 @@ def forward_backward_no_pipelining(
     forward_data_store = []
     input_tensor, output_tensor_grad = None, None
     total_num_tokens = torch.zeros([], dtype=torch.int, device="cuda")
+    # NOTE: 前 n-1 个 microbatch
     with no_sync_func():
         for i in range(num_microbatches - 1):
             output_tensor, num_tokens = forward_step(
@@ -718,6 +725,8 @@ def forward_backward_pipelining_with_interleaving(
     # model_chunk_id in [0, num_model_chunks)
     # virtual_microbatch_id in [0, total_num_microbatches)
 
+    # NOTE: 实现 interleaved 1F1B 调度方法，对 model 模型进行进一步的拆分为多块 (chunk)
+
     assert isinstance(model, list), "interleaved pipeline parallelism expected model chunking"
     assert all(isinstance(chunk, torch.nn.Module) for chunk in model), "invalid model chunking"
     assert isinstance(
@@ -780,11 +789,13 @@ def forward_backward_pipelining_with_interleaving(
             no_sync_context.__exit__(None, None, None)
             no_sync_context = None
 
+    # NOTE: 需要关闭自动的 grad 更新
     disable_grad_sync()
 
     # Model chunk IDs with synchronized grads
     synchronized_model_chunks = set()
 
+    # NOTE: 由于存在多个 model，要保存多个 model 的输入 input_tensors 和输出 output_tensors
     input_tensors = [[] for _ in range(len(model))]
     output_tensors = [[] for _ in range(len(model))]
     total_num_tokens = torch.tensor(0, dtype=torch.int).cuda()
@@ -842,10 +853,12 @@ def forward_backward_pipelining_with_interleaving(
         tensor_shape = [seq_length, micro_batch_size, config.hidden_size]
         tensor_shape[0] = tensor_shape[0] // parallel_state.get_context_parallel_world_size()
         if config.sequence_parallel:
+            # NOTE: 如果是 sequence 并行的话，是从 sequence 维度对矩阵 tensor 进行切分
             tensor_shape[0] = (
                 tensor_shape[0] // parallel_state.get_tensor_model_parallel_world_size()
             )
 
+    # NOTE: 计算总的 total_num_microbatches，等于传入的 microbatch 和 len(model) 的乘积
     # Compute number of warmup and remaining microbatches.
     num_model_chunks = len(model)
     (
@@ -897,6 +910,7 @@ def forward_backward_pipelining_with_interleaving(
 
     def get_model_chunk_id(virtual_microbatch_id, forward):
         """Helper method to get the model chunk ID given the iteration number."""
+        # NOTE: 获取 microbatch_id 对应的 model_chunk_id
         model_chunk_id = model_chunk_id_table[virtual_microbatch_id % total_num_microbatches]
         if not forward:
             model_chunk_id = num_model_chunks - model_chunk_id - 1
@@ -1287,6 +1301,7 @@ def forward_backward_pipelining_with_interleaving(
 
     # Run 1F1B in steady state.
     nvtx_range_push(suffix="steady")
+    # NOTE: 遍历处理每个 microbatch
     for k in range(num_microbatches_remaining):
         # Forward pass.
         forward_k = k + num_warmup_microbatches
@@ -1417,10 +1432,13 @@ def forward_backward_pipelining_with_interleaving(
                 )
                 bwd_recv_buffer[(backward_k + 1) % bwd_recv_buffer_size] = None
         else:  # No p2p overlap.
+            # NOTE:先进行 1 forward, forward_k 是 microbatch_id
+            # NOTE: 跟 without-interleaving 不同的是，forward 中会跟据 microbatch_id 计算 model_chunk_id，跟据 model_chunk_id 运行对应的 forward_step
             output_tensor = forward_step_helper(
                 forward_k, microbatch_id, checkpoint_activations_microbatch
             )
 
+            # NOTE: 再进行 1 backward, 类似 forward
             # Backward pass.
             backward_k = k
             input_tensor_grad = backward_step_helper(backward_k)
@@ -1451,6 +1469,7 @@ def forward_backward_pipelining_with_interleaving(
             if k == (num_microbatches_remaining - 1):
                 recv_prev = False
 
+            # NOTE: 计算完前向和后向，跟前向和后向的 rank 结点进行通信
             # Communicate tensors.
             (input_tensor, output_tensor_grad) = (
                 p2p_communication.send_forward_backward_recv_forward_backward(
@@ -1582,6 +1601,7 @@ def forward_backward_pipelining_with_interleaving(
         if send_prev_wait_handle is not None:
             send_prev_wait_handle.wait()
 
+        # NOTE: 在一批 microbatch 训练结束后，进行 grad 的同步操作
         # Launch any remaining grad reductions.
         enable_grad_sync()
         if config.grad_sync_func is not None:
@@ -1767,6 +1787,7 @@ def forward_backward_pipelining_without_interleaving(
 ):
     """Run non-interleaved 1F1B schedule, with communication between pipeline
     stages. Returns dictionary with losses if the last stage, empty dict otherwise."""
+    # NOTE: 实现了 non-interleaved 的 1F1B 算法，在最后一个 stage 返回 loss
 
     if isinstance(model, list):
         assert (
@@ -1814,6 +1835,7 @@ def forward_backward_pipelining_without_interleaving(
 
     disable_grad_sync()
 
+    # NOTE: 先进行 warmup 的 microbatch 的计算
     # Compute number of warmup microbatches.
     num_warmup_microbatches = (
         parallel_state.get_pipeline_model_parallel_world_size()
@@ -1883,9 +1905,11 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
+        # NOTE: 从前一个 stage 获取上一个 rank 的输出，对于第一个 stage 是从 dataloader 获取输入
         input_tensor = recv_forward(
             recv_tensor_shapes, config, parallel_state.is_pipeline_first_stage()
         )
+        # NOTE: 进行当前 stage 的前向计算
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1900,6 +1924,7 @@ def forward_backward_pipelining_without_interleaving(
             current_microbatch=i,
             encoder_decoder_xattn=encoder_decoder_xattn,
         )
+        # NOTE: 将当前 stage 的输出发送给下一个 rank
         send_forward(
             output_tensor, send_tensor_shapes, config, parallel_state.is_pipeline_last_stage()
         )
@@ -1910,6 +1935,7 @@ def forward_backward_pipelining_without_interleaving(
             output_tensors.append(output_tensor)
             deallocate_output_tensor(output_tensor[0], config.deallocate_pipeline_outputs)
 
+    # NOTE: 开始进入 1F1B 的稳定状态
     # Before running 1F1B, need to receive first forward tensor.
     # If all microbatches are run in warmup / cooldown phase, then no need to
     # receive this tensor here.
@@ -1930,6 +1956,7 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
+        # NOTE: 先进行前向 forward_step 计算
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1959,15 +1986,18 @@ def forward_backward_pipelining_without_interleaving(
                 )
 
         else:
+            # NOTE: 调用 send_forward_recv_backward 将当前 stage 的输出传给下一个 stage
             output_tensor_grad = send_forward_recv_backward(
                 output_tensor, send_tensor_shapes, config, parallel_state.is_pipeline_last_stage()
             )
 
+            # NOTE: 在 1F1B 中通过 buffer 保存前向的输入和输出用于反向的计算,
             # Add input_tensor and output_tensor to end of list.
             input_tensors.append(input_tensor)
             output_tensors.append(output_tensor)
             deallocate_output_tensor(output_tensor[0], config.deallocate_pipeline_outputs)
 
+            # NOTE: 每次计算的时候会 pop 出来一组 input 和 output
             # Pop input_tensor and output_tensor from the start of the list for
             # the backward pass.
             input_tensor = input_tensors.pop(0)
@@ -1992,6 +2022,7 @@ def forward_backward_pipelining_without_interleaving(
                     parallel_state.is_pipeline_first_stage(),
                 )
             else:
+                # NOTE: 计算完 backward 后会通过 send_backward_recv_forward 把梯度回传给前一个 stage
                 input_tensor = send_backward_recv_forward(
                     input_tensor_grad,
                     recv_tensor_shapes,
@@ -1999,6 +2030,7 @@ def forward_backward_pipelining_without_interleaving(
                     parallel_state.is_pipeline_first_stage(),
                 )
 
+    # NOTE: 等所有 backward 结束
     # Run cooldown backward passes.
     if not forward_only:
         for i in range(num_warmup_microbatches):

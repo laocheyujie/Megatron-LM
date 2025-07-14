@@ -156,9 +156,11 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         reduce-scatter and all-gather.
         """
 
+        # NOTE: 1. 获取 DP 的 rank
         data_parallel_rank = param_and_grad_buffer.data_parallel_group.rank()
         data_parallel_world_size = param_and_grad_buffer.data_parallel_group.size()
 
+        # NOTE: 2. 计算单个 Grad buffer 切片的大小
         bucket = param_and_grad_buffer.buckets[bucket_index]
         gbuf_size = bucket.grad_data.numel()
         assert (
@@ -166,6 +168,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         ), f"Each bucket's buffer size should be divisible by {data_parallel_world_size}"
         max_gbuf_range_size = gbuf_size // data_parallel_world_size
 
+        # NOTE: 3. 跟据 DDP 的 rank 总数，分别计算每个 rank 对应的 world range
         # All world ranges (i.e., across all data parallel ranks).
         gbuf_world_all_ranges = []
         for r in range(data_parallel_world_size):
@@ -178,9 +181,11 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
             )
             gbuf_world_all_ranges.append(gbuf_world_range)
 
+        # NOTE: 4. 保存当前 rank 的 world range 和 local range
         # Local DP's ranges.
         gbuf_world_range = gbuf_world_all_ranges[data_parallel_rank]
 
+        # NOTE: 5. 计算 param range 的范围
         # Get each param's ranges.
         param_range_map = cls._build_model_gbuf_param_range_map(
             param_and_grad_buffer.param_index_map, gbuf_world_range, bucket.offset
@@ -248,6 +253,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         #   cross reference between the DDP mappings and the optimizer group
         #   parameters. This mapping only for use in the next step of building
         #   the local mapping over this DP rank's parameters.
+        # NOTE: 1. 创建全局的参数到 group_index 的映射，也就是 <model_parameter:group_index>
         world_param_group_map = {}
         for group_index, group in enumerate(param_groups):
             for param in group["params"]:
@@ -259,6 +265,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         #   from parameters to their containing group index and order within
         #   the group. The group index and order are particularly important for
         #   saving and loading checkpoints.
+        # NOTE: 2. 创建当前 rank 的 local_param_group_map, 是 param 与 (group_index, group_params_len) 的映射， local_param_group_map 虽然返回了但后面没用
         local_param_group_map = {}
         group_ranges = [{"params": []} for _ in param_groups]
         for gbuf_range_map in gbuf_ranges:
@@ -295,6 +302,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         the optimizer operates on shards of the model parameters, rather than
         the full parameters.
         """
+        # NOTE: 创建 optimizer step 要用到的 main parameter groups
 
         # Parameter groups:
         #   model_float16_groups: original float16 parameters
@@ -302,12 +310,18 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
         #   shard_float16_groups: shards of original float16 parameters
         #   shard_fp32_groups: shards of original fp32 parameters
         #   shard_fp32_from_float16_groups: fp32 copy of float16 parameters
+        # NOTE: 保存原本 fp16 类型的 param
         model_float16_groups = []
+        # NOTE: 保存原本 fp32 类型的 param
         model_fp32_groups = []
+        # NOTE: 保存原本 fp16 类型的 param 切片
         shard_float16_groups = []
+        # NOTE: 保存原本 fp32 类型的 param 切片
         shard_fp32_groups = []
+        # NOTE: 保存原本 fp16 类型 param 的 fp32 类型 param 的副本
         shard_fp32_from_float16_groups = []
 
+        # NOTE: 分配每个 group 的 param 参数切片
         # Allocate (or slice) each group's param shard.
         for group_range in opt_group_ranges:
 
@@ -338,7 +352,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                     if is_float8tensor(model_param) and config.fp8_recipe != "delayed":
                         # MXFP8Tensor and BlockwiseQTensor don't support view(-1)
                         shard_model_param = None
-                    else:
+                    else: 
                         shard_model_param = model_param.detach().view(-1)[
                             param_range.start : param_range.end
                         ]
@@ -370,6 +384,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                                     param_range.start : param_range.end
                                 ]
                         else:
+                            # 如果是 fp16/bf16 类型参数，clone 为 fp32 类型的切片
                             shard_main_param = shard_model_param.clone().float()
 
                         tensor_parallel.copy_tensor_model_parallel_attributes(
@@ -385,6 +400,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                     model_param.main_param = shard_main_param
                     model_param.main_param_sharded = True
 
+                    # NOTE: 将 param 添加到对应的 group 中
                     # Add to group.
                     model_float16_params_this_group.append(model_param)
                     shard_float16_params_this_group.append(shard_model_param)
@@ -392,6 +408,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
 
                 # fp32 params.
                 elif model_param.type() == 'torch.cuda.FloatTensor':
+                    # NOTE: 如果是 fp32 类型参数，不进行 clone，直接引用
                     shard_model_param = model_param.view(-1)[param_range.start : param_range.end]
                     model_fp32_params_this_group.append(model_param)
                     shard_fp32_params_this_group.append(shard_model_param)
@@ -410,6 +427,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                         'Received {}'.format(model_param.type())
                     )
 
+            # NOTE: 更新优化器的参数
             # Update optimizer's params.
             if not config.use_precision_aware_optimizer_no_fp8_or_ds_fp8:
                 group_range["orig_group"]["params"] = [
@@ -575,6 +593,7 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
                 params=[g["orig_group"] for g in self.opt_group_ranges], **self.optimizer.defaults
             )
         else:
+            # NOTE: 最后更新优化器的 param_groups
             self.optimizer.param_groups = [g["orig_group"] for g in self.opt_group_ranges]
             self.optimizer.load_state_dict(self.optimizer.state_dict())
 

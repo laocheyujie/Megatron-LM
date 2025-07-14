@@ -403,6 +403,9 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             always require a grad scaler.
         init_state_fn (Callable, optional): function to initialize state in the optimizer.
     """
+    # NOTE: 混合精度训练
+    # 当模型用 bf16，要么用一个常数的 loss scale，要么不用loss scale，不用的话 grad_scaler = None
+    # 当模型不是 bf16，一般要用一个 loss scale，常数的，还是动态的
 
     def __init__(
         self,
@@ -418,6 +421,7 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
         self.grad_scaler = grad_scaler
 
         # None grad scaler is only supported for bf16.
+        # NOTE: 用 fp16 跑模型时，一定要用 loss scale
         if self.grad_scaler is None:
             assert not self.config.fp16, 'fp16 expects a grad scaler.'
 
@@ -425,12 +429,16 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
         # Any non-zero value indicates inf/nan.
         # Note that we keep this for the cases that grad scaler is none.
         # We still record nan/inf if we have a bfloat16 with a grad scaler.
+        # NOTE: 用于记录【所有gpu上】是否发生了梯度溢出的情况
+        # 值为 0 时表示所有 gpu 上都没有梯度溢出情况；值不为 0 时表示至少 1 块 gpu 上出现梯度溢出情况
         if self.grad_scaler:
             self.found_inf = torch.tensor([0.0], dtype=torch.float, device='cuda')
 
         # Dummy tensor needed for apex multi-apply tensor.
         # For bfloat, we don't have multi-tensor apply and for now
         # we set it to none so the multi-tensor apply gets ignored.
+        # NOTE: 这是在定义 apex 的 multi_tensor_applier 函数的其中一个参数，该函数的目的是在 fp16 的精度下让数据复制更有效率（在一个kernel内完成复制）
+        # bf16下还没有相关的优化操作，如果不使用该函数，则正常用 tensor.copy_(src) 的方式做复制
         if self.config.bf16:
             self._dummy_overflow_buf = None
         else:
@@ -456,15 +464,19 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             main_grads = self._collect_main_grad_data_for_unscaling()
 
         # Reset found inf.
+        # NOTE: 用于记录全局（所有的gpu上）是否存在梯度溢出的情况，self.found_inf 为 0，则不存在梯度溢出；否则至少 1 块 gpu 存在梯度溢出情况
+        # 如果存在梯度溢出，将会跳过该轮 step() 更新
         self.found_inf.fill_(0.0)
 
         if not self.is_stub_optimizer:
             # Unscale and set found inf/nan
+            # NOTE: 1. 判断 scale 后是否存在梯度溢出; 2. unscale 梯度，将梯度恢复正常值，为更新做准备
             torch._amp_foreach_non_finite_check_and_unscale_(
                 main_grads, self.found_inf, self.grad_scaler.inv_scale
             )
 
         # Update across all model parallel instances.
+        # NOTE: 检查全局上是否有梯度溢出情况
         torch.distributed.all_reduce(
             self.found_inf,
             op=torch.distributed.ReduceOp.MAX,
@@ -487,15 +499,18 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
                 barrier=self.config.barrier_with_L1_time
             )
         if not self.is_stub_optimizer:
+            # NOTE: 把 model grads 转变成 fp32 的形式，并拷贝到 main_grads 上
             self._copy_model_grads_to_main_grads()
         if timers is not None:
             timers('optimizer-copy-to-main-grad').stop()
 
         # Do unscale, check for inf, and update grad scaler only for
         # the case that grad scaler is provided.
+        # NOTE: 如果做过 loss scale
         if self.grad_scaler:
 
             # Unscale and check for inf/nan.
+            # NOTE: 遍历【每块】GPU，检查是否存在梯度溢出情况，并将 main_grads 还原成未 scale 的值
             if timers is not None:
                 timers('optimizer-unscale-and-check-inf', log_level=1).start(
                     barrier=self.config.barrier_with_L1_time
@@ -506,6 +521,8 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
 
             # We are done with scaling gradients
             # so we can update the loss scale.
+            # NOTE: 根据溢出的检查结果，动量更新 loss scale
+            # NOTE: 如果是常数 scaler，则 update 后 scale 不变；如果是动态 scaler，则会根据 scale 前梯度是否存在 nan/inf 来动态调整 scale 的大小
             self.grad_scaler.update(found_inf_flag)
 
             return found_inf_flag
@@ -522,6 +539,8 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
                 barrier=self.config.barrier_with_L1_time
             )
         if not self.is_stub_optimizer:
+            # NOTE: 正常更新 optimizer
+            # NOTE: 由于在 __init__ 中就将 optimizer 的 param 从 fp16 指向了 fp32，所以这里更新的是 fp32 的 main_param
             self.optimizer.step()
         if timers is not None:
             timers('optimizer-inner-step').stop()
@@ -532,6 +551,8 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
                 barrier=self.config.barrier_with_L1_time
             )
         if not self.is_stub_optimizer:
+            # NOTE: 将 main_param 拷贝给 model_param
+            # NOTE: 有了更新完的 fp32 权重，就能做下一轮训练了，所以这时我们需要用新的 fp32 权重，去更新一次 fp16 权重
             (
                 self._copy_main_params_to_model_params()
                 if not self.config.reuse_grad_buf_for_mxfp8_param_ag
@@ -550,6 +571,7 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
         if found_inf_flag:
             return False, None, None
 
+        # NOTE: 梯度剪裁
         # Clip the main gradients.
         if timers is not None:
             timers('optimizer-clip-main-grad', log_level=1).start(
@@ -557,10 +579,12 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
             )
         grad_norm = 0.0
         if self.config.clip_grad > 0.0:
+            # NOTE: 这是对 main grad 做 inplace 的剪裁，grad_norm 返回的是 total_norm
             grad_norm = self.clip_grad_norm(self.config.clip_grad)
         if timers is not None:
             timers('optimizer-clip-main-grad').stop()
 
+        # NOTE: 统计为 0 的梯度数
         # Count the zeros in the grads.
         if timers is not None:
             timers('optimizer-count-zeros', log_level=1).start(
@@ -607,12 +631,22 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
             #   float16_groups: original float16 parameters
             #   fp32_from_float16_groups: fp32 copy of float16 parameters
             #   fp32_from_fp32_groups: original fp32 parameters
+            # NOTE: 装原始就是 fp16/bf16 的权重
             self.float16_groups = []
+            # NOTE: 装从 fp16 拷贝并转换而来的 fp32 权重
             self.fp32_from_float16_groups = []
+            # NOTE: 装原始就是 fp32 的权重
             self.fp32_from_fp32_groups = []
 
+            # NOTE: 原始 self.optimizer.param_groups 中装的就是 fp16/bf16 的模型权重
             # For all the groups in the original optimizer:
             for param_group in self.optimizer.param_groups:
+                # NOTE: 从 self.optimizer.param_groups 中找出 fp16/bf16 的权重，装入列表 self.float16_groups 中
+                # NOTE: 找出 fp32 的权重，装入列表 self.fp32_from_fp32_groups 中
+                # NOTE: BN/LN 这些部分相关的权重，在训练过程中如果使用 fp16，会引起较大的精度损失，造成训练的不稳定，因此一般这些部分的权重从头到尾都用 fp32 来表示
+                # NOTE: 将 fp16 的权重拷贝一份，并存成 fp32 的形式
+                # NOTE: fp16 的权重在 Megatron 代码中被称作 model_param（意思是用来训练模型的），fp32 的权重被称作 main_param（意思是真正用于做梯度更新的，并且是最终要的结果）
+                # NOTE: 再将 self.optimizer.param_groups 指向的权重从原来的 fp16，转而指向 fp32，这样调用 step() 方法时，更新的就是 fp32 的权重
                 float16_params_this_group = []
                 fp32_params_this_group = []
                 fp32_from_float16_params_this_group = []
@@ -622,14 +656,25 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
 
                         # float16 params:
                         if param.type() in ['torch.cuda.HalfTensor', 'torch.cuda.BFloat16Tensor']:
+                            # NOTE: 装原始就是 fp16/bf16 的权重
                             float16_params_this_group.append(param)
                             # Create a copy
+                            # NOTE: 将原始就是 fp16/bf16 的权重转变为 fp32 的形式
+                            # NOTE: detach: 新的权重脱离了计算图 (requires_grad=False)，但是和旧权重共享内存
+                            # NOTE: clone: 开辟了新的内存，新的权重和旧权重完全独立
+                            # NOTE: float: 将权重转换为 fp32 的形式
+                            # NOTE: 最终实现: 从 fp16/bf16 转成 fp32，同时脱离计算图，同时开辟新内存的目的
+                            # NOTE: 单独用 detach 无法开辟新内存，单独用 clone 无法脱离计算图
                             main_param = param.detach().clone().float()
                             # Copy tensor model parallel attributes.
+                            # NOTE: 将 tp 并行相关的 tensor 属性拷贝到这些转换而来的 fp32 上
                             tensor_parallel.copy_tensor_model_parallel_attributes(main_param, param)
+                            # NOTE: 将是否是输出层 WE 的情况拷贝到转换而来的 fp32 上
                             if hasattr(param, 'shared'):
+                                # NOTE: shared 这个属性只在 pp 度非 0 时的输出层 WE 才有
                                 main_param.shared = param.shared
                             # Replace the optimizer params with the new fp32 copy.
+                            # NOTE: 将 optimizer 中的参数用 fp32 代替
                             param_group['params'][i] = main_param
 
                             # Store handle to main_param.
@@ -666,6 +711,7 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         fp32_from_float16_groups as a memory optimization to reduce
         fragmentation; in the case of set_to_none==True, the space
         used by this field can be safely deallocated at this point."""
+        # NOTE: 只对参与模型训练的那部分参数做梯度计算（同理做梯度清0），对 optimizer 中存储的 fp32 的 states 不做梯度计算/清理处理，这部分 states 只用于做更新
         if self.is_stub_optimizer:
             return
         for group in self.float16_groups:
@@ -696,6 +742,7 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         return main_grads
 
     def _get_model_and_main_params_data_float16(self):
+        # NOTE: 得到原始 fp16 的权重和由 fp16 转变而来的 fp32 的权重
         model_data = []
         main_data = []
         for model_group, main_group in zip(self.float16_groups, self.fp32_from_float16_groups):
@@ -705,10 +752,12 @@ class Float16OptimizerWithFloat16Params(MixedPrecisionOptimizer):
         return model_data, main_data
 
     def _copy_model_grads_to_main_grads(self):
+        # NOTE: 将model grads拷贝到main grads上去
         # This only needs to be done for the float16 group.
         for model_group, main_group in zip(self.float16_groups, self.fp32_from_float16_groups):
             for model_param, main_param in zip(model_group, main_group):
                 if hasattr(model_param, 'main_grad'):
+                    # 将梯度从 fp16 转为 fp32
                     main_param.grad = model_param.main_grad.float()
                 else:
                     if model_param.grad is not None:

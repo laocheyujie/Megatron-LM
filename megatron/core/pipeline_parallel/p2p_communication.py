@@ -303,6 +303,7 @@ def _communicate(
             dtype=config.pipeline_dtype,
         )
 
+    # NOTE: 先进行接收 buffer 的初始化操作
     if recv_prev:
         if config.pipeline_dtype is None:
             raise RuntimeError("pipeline_dtype must be provided if recv_prev is True")
@@ -434,6 +435,7 @@ def recv_forward(
 
     See _communicate for argument details.
     """
+    # NOTE: 从 pipeline 并行组的前一个 rank 获取数据，函数里面会直接调用 _communicate 函数
     if is_first_stage:
         input_tensor = None
     else:
@@ -460,6 +462,7 @@ def recv_backward(
 
     See _communicate for argument details.
     """
+    # NOTE: 从 pipeline 并行组的后一个 rank 获取数据，函数里面会直接调用 _communicate 函数
     if is_last_stage:
         output_tensor_grad = None
     else:
@@ -486,6 +489,7 @@ def send_forward(
 
     See _communicate for argument details.
     """
+    # NOTE: 向 pipeline 并行组的后一个 rank 发送数据，函数里面会直接调用 _communicate 函数
 
     if not is_last_stage:
         if config.timers is not None:
@@ -510,6 +514,7 @@ def send_backward(
 
     See _communicate for argument details.
     """
+    # NOTE: 向 pipeline 并行组的前一个 rank 发送数据，函数里面会直接调用 _communicate 函数
     if not is_first_stage:
         if config.timers is not None:
             config.timers('backward-send', log_level=2).start()
@@ -595,6 +600,7 @@ def send_forward_recv_forward(
 
     See _communicate for argument details.
     """
+    # NOTE: 从 pipeline 并行组的前一个 rank 获取数据，函数里面会直接调用 _communicate 函数
     if config.timers is not None:
         config.timers('forward-send-forward-recv', log_level=2).start()
     input_tensor, _, wait_handles = _communicate(

@@ -419,12 +419,14 @@ class CheckpointFunction(torch.autograd.Function):
         # Copy the rng states.
         ctx.rng_states = _get_all_rng_states()
 
+        # NOTE: 前向计算时使用 no_grad() 的上下文，不保存 grad
         with torch.no_grad():
             outputs = run_function(*args)
 
         # Divide hidden states across model parallel group and only keep
         # the chunk corresponding to the current rank.
         if distribute_saved_activations:
+            # NOTE: 保存 activation 的时候会把 tensor 展成一维的，每个 rank 只存自己的那一部分
             ctx.input_0_shape = args[0].data.shape
             safely_set_viewless_tensor_data(
                 args[0], split_tensor_into_1d_equal_chunks(args[0].data, new_buffer=True)
@@ -446,6 +448,7 @@ class CheckpointFunction(torch.autograd.Function):
             )
         inputs = ctx.saved_tensors
         if ctx.distribute_saved_activations:
+            # NOTE: 反向时，会在 model_group 中先通过 gather_split_1d_tensor 函数进行 all_gather 操作, 再进行 backward 的计算
             safely_set_viewless_tensor_data(
                 inputs[0], gather_split_1d_tensor(inputs[0].data).view(ctx.input_0_shape)
             )

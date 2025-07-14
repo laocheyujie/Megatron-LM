@@ -988,16 +988,17 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     # Build model.
     def build_model():
         # NOTE: 1. 定义并构建 CPU 版模型
+        # NOTE: 1.1 当分布式进行框架采用 virtual pipeline
         if (
             mpu.get_pipeline_model_parallel_world_size() > 1
             and args.virtual_pipeline_model_parallel_size is not None
         ):
-            # NOTE: 1.1 当分布式进行框架采用 virtual pipeline
             if model_type == ModelType.encoder_and_decoder:
                 assert (
                     args.encoder_pipeline_model_parallel_size == 0
                 ), "Interleaved schedule not supported for model with encoder on separate PP rank"
             model = []
+            # NOTE: 按照 args.virtual_pipeline_model_parallel_size 的大小保存一个同等长度的 model 列表
             for i in range(args.virtual_pipeline_model_parallel_size):
                 # Set pre_process and post_process only after virtual rank is set.
                 pre_process = mpu.is_pipeline_first_stage(ignore_virtual=False, vp_stage=i)
@@ -1394,6 +1395,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
 
     rerun_state_machine = get_rerun_state_machine()
     while rerun_state_machine.should_run_forward_backward(data_iterator):
+        # NOTE: 1. 清除 grad
         # Set grad to zero.
         for model_chunk in model:
             model_chunk.zero_grad_buffer()
@@ -1407,6 +1409,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         else:
             adjust_tensor_shapes_fn = None
 
+        # NOTE: 2. 执行前向、反向计算
         # Forward pass.
         forward_backward_func = get_forward_backward_func()
         losses_reduced = forward_backward_func(
@@ -1433,12 +1436,14 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.cancel_gradients_last_layer(args.curr_iteration)
 
+    # NOTE: 3. 更新参数
     # Update parameters.
 
     timers('optimizer', log_level=1).start(barrier=args.barrier_with_L1_time)
     update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
     timers('optimizer').stop()
 
+    # NOTE: 4. 对更新后的 param 执行 gather 操作
     # when freezing sub-models we may have a mixture of successful and unsucessful ranks,
     # so we must gather across mp ranks
     update_successful = logical_and_across_model_parallel_group(update_successful)
@@ -1453,6 +1458,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         unwrapped_model = unwrap_model(model[0])
         unwrapped_model.update_momentum(args.curr_iteration)
 
+    # NOTE: 5. 通过 scheduler 更新学习率
     # Update learning rate.
     if update_successful:
         increment = get_num_microbatches() * args.micro_batch_size * args.data_parallel_size
