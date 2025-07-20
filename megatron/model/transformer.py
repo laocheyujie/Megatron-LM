@@ -114,6 +114,7 @@ class ParallelMLP(MegatronModule):
             ffn_hidden_size *= 2
 
         # Project to 4h. If using swiglu double the output width, see https://arxiv.org/pdf/2002.05202.pdf
+        # NOTE: self.dense_h_to_4h: Wi，尺寸大小 (h, 4h/tp_world_size)
         self.dense_h_to_4h = tensor_parallel.ColumnParallelLinear(
             config.hidden_size,
             ffn_hidden_size,
@@ -148,6 +149,7 @@ class ParallelMLP(MegatronModule):
             self.activation_func = F.gelu
 
         # Project back to h.
+        # NOTE: self.dense_4h_to_h, Wo 尺寸大小为 (4h/tp_world_size, h)
         self.dense_4h_to_h = tensor_parallel.RowParallelLinear(
             config.ffn_hidden_size,
             config.hidden_size,
@@ -164,11 +166,11 @@ class ParallelMLP(MegatronModule):
             self.fpdt_FFN_chunk_size = int(args.ds_sequence_parallel_fpdt_chunk_size // mpu.get_sequence_parallel_world_size() // 2)
 
     def forward(self, hidden_states):
-
         if self.ds_sequence_parallel_fpdt:
             output, output_bias = FPDT_FFN.apply(hidden_states, self.dense_h_to_4h.weight, self.dense_h_to_4h.bias, self.dense_4h_to_h.weight, self.dense_4h_to_h.bias, self.add_bias, self.fpdt_FFN_chunk_size)
         else:
             # [s, b, 4hp]
+            # NOTE: 输入数据过 Wi 层 [s, b, 4h/tp_word_size]
             intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
 
             if self.bias_gelu_fusion:
@@ -182,6 +184,8 @@ class ParallelMLP(MegatronModule):
                 intermediate_parallel = self.activation_func(intermediate_parallel)
 
             # [s, b, h]
+            # NOTE: Wi 层输出数据过 Wo 层
+            # NOTE: 在对 expert 采取 tp 切分的情况下，这里的输出需要在 tp_group 内做 AllReduce
             output, output_bias = self.dense_4h_to_h(intermediate_parallel)
         return output, output_bias
 
@@ -1007,6 +1011,7 @@ class ParallelTransformerLayer(MegatronModule):
         if args.ds_sequence_parallel_fpdt:            
             self.self_attention = launch_chunk_attention(args, config)
         else:
+            # NOTE: Attention (non-MoE) 部分
             self.self_attention = ParallelAttention(
                 config,
                 layer_number,
@@ -1058,28 +1063,38 @@ class ParallelTransformerLayer(MegatronModule):
                                                               sequence_parallel=config.sequence_parallel)
 
         # MLP
+        # NOTE: MLP（MoE）部分
+        # 提供三种 MLP 定义方式:
+        # 1. SwitchMLP: Megatron 设计的 MoE 架构
+        # 2. 普通 MLP：当 num_expert=1 时，说明该模型不是 MoE，只是一个普通的 dense MLP 层
+        # 3. DeepSpeed MoE： DeepSpeed 自定义的 MoE 架构
         self.num_experts = num_experts
         if args.num_experts_switch is not None:
+            # NOTE: 1. Megatron-LM's MoE
             self.mlp = SwitchMLP(config) # Megatron-LM's MoE
         else:
             if self.num_experts <= 1: # dense, not MoE
+                # NOTE: 2. 普通 MLP (Dense Model)
                 self.mlp = ParallelMLP(config)
             else: # DeepSpeed's MoE
+                # NOTE: 3. DeepSpeed's MoE
+                # NOTE: enable_expert_tensor_parallelism: 表示是否要对专家做 tp 切分
                 enable_expert_tensor_parallelism = args.enable_expert_tensor_parallelism
                 self.mlp = MoE(args.hidden_size,
+                               # NOTE: 定义单个专家 
                                ParallelMLP(config,
                                            moe=True,
                                            enable_expert_tensor_parallelism=enable_expert_tensor_parallelism),
-                               num_experts=self.num_experts,
-                               ep_size=args.moe_expert_parallel_size,
-                               k=args.topk,
-                               use_residual=(args.mlp_type == 'residual'),
-                               capacity_factor=args.moe_train_capacity_factor,
-                               eval_capacity_factor=args.moe_eval_capacity_factor,
-                               min_capacity=args.moe_min_capacity,
-                               drop_tokens=args.moe_token_dropping,
-                               use_tutel=args.use_tutel,
-                               enable_expert_tensor_parallelism=enable_expert_tensor_parallelism,
+                               num_experts=self.num_experts,  # 每层专家总数
+                               ep_size=args.moe_expert_parallel_size, # ep_world_size
+                               k=args.topk, # topKEpert 中的 K，deepspeed 使用 Gshard 模型，一般而言 K=2，但也提供了 K=1 的方法
+                               use_residual=(args.mlp_type == 'residual'),  # deepspeed 自创的 PR-MoE 架构中提出的方法
+                               capacity_factor=args.moe_train_capacity_factor,  # train 过程 expert 的 capacity factor
+                               eval_capacity_factor=args.moe_eval_capacity_factor,  # eval 过程 expert 的 capacity factor
+                               min_capacity=args.moe_min_capacity,  # 每个 expert 最少需要达到的 capacity
+                               drop_tokens=args.moe_token_dropping,  # 是否需要对 tokens 做溢出处理
+                               use_tutel=args.use_tutel,  # 是否需要使用 tutel 路由优化方法
+                               enable_expert_tensor_parallelism=enable_expert_tensor_parallelism,  # 是否需要对专家层做 tp 切分
                                top2_2nd_expert_sampling=args.moe_top2_2nd_expert_sampling)
 
         # Set bias+dropout+add fusion grad_enable execution handler.

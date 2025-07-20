@@ -123,6 +123,7 @@ NUM_GPUS=64
 ###############################################################################
 ### MoE configs
 ## Number of experts. EP_SIZE 1 means dense model without MoE
+# NOTE: EP_SIZE = 1: 不采用 MoE 架构，即 Dense 架构；在P R-MoE 中，其形式如"64 64 128 128"，表示每层的专家数量
 # EP_SIZE=1
 EP_SIZE=128
 

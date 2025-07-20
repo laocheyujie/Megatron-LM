@@ -531,6 +531,7 @@ def setup_model_and_optimizer(model_provider_func,
     """Setup model and optimizer."""
     args = get_args()
 
+    # NOTE: 根据当前 rank，切割好的模型
     model = get_model(model_provider_func, model_type)
 
     # initialize the compression here
@@ -576,6 +577,7 @@ def setup_model_and_optimizer(model_provider_func,
         opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
 
     if args.deepspeed:
+        # NOTE: 使用deepspeed做初始化
         print_rank_0("DeepSpeed is enabled.")
         pp = mpu.get_pipeline_model_parallel_world_size()
         if args.data_efficiency_curriculum_learning and build_train_valid_test_datasets_provider is not None:

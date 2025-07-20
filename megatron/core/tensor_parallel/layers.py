@@ -526,6 +526,9 @@ class ColumnParallelLinear(torch.nn.Module):
         self.output_size = output_size
         self.gather_output = gather_output
         # Divide the weight matrix along the last dimension.
+        # NOTE: 判断相关 module 是否表示 expert
+        # 1. 如果是 MoE，但不希望对 expert 做 tp 处理，则强制设 tp_world_size = 1
+        # 2. 其余情况（非 MoE，或者是 MoE 且希望对 expert 做 tp 处理），则复用 non-MoE 的 tp_world_size
         if moe and (not enable_expert_tensor_parallelism):
             world_size = 1
             self.is_expert_without_slicing = True
@@ -638,6 +641,10 @@ class ColumnParallelLinear(torch.nn.Module):
 
         bias = self.bias if not self.skip_bias_add else None
 
+        # NOTE: 定义 f 算子
+        # 1. 如果 expert 未采用 tp 切分，则对 expert 的 forward 和 backward 方法不需要做任何修改
+        # 2. 如果 expert 采用 tp 切分，则需要对 expert 的 forward 和 backward 方法做修改，具体为：
+        #    forward 时直接 copy input，backward 时 allreduce 梯度
         if self.async_tensor_model_parallel_allreduce or \
                 self.sequence_parallel or \
                 self.is_expert_without_slicing: # non-expert only tensor parallelism
@@ -653,6 +660,9 @@ class ColumnParallelLinear(torch.nn.Module):
             async_grad_allreduce=self.async_tensor_model_parallel_allreduce,
             sequence_parallel=self.sequence_parallel
         )
+        # NOTE: 定义 g 算子
+        # 同理根据 expert 是否做了 tp 切分，决定要不要更改 forward 和 backward 方法
+        # 注意，当对单个 expert 做 tp 切分时，不管 gather_output 是 True/False, 单个 expert 的输出结果一定会在同个 tp 组内强制做 allReduce
         if self.gather_output and not self.is_expert_without_slicing:
             # All-gather across the partitions.
             assert not self.sequence_parallel
