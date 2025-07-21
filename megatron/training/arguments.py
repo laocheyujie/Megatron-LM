@@ -2463,6 +2463,7 @@ def _add_tokenizer_args(parser):
     group.add_argument('--vocab-extra-ids', type=int, default=0,
                        help='Number of additional vocabulary tokens. '
                             'They are used for span masking in the T5 model')
+    # NOTE: 注册 tokenizer 类型
     group.add_argument('--tokenizer-type', type=str,
                        default=None,
                        choices=['BertWordPieceLowerCase',

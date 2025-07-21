@@ -51,6 +51,7 @@ class Encoder(object):
 
     def initializer(self):
         # Use Encoder class as a container for global data
+        # NOTE: args.tokenize_type 分别初始化对应的 tokenizer
         Encoder.tokenizer = build_tokenizer(self.args)
         if self.args.split_sentences:
             if not nltk_available:
@@ -62,6 +63,7 @@ class Encoder(object):
             else:
                 library = os.path.join("tokenizers", "punkt", f"{self.args.lang}.pickle")
                 url = f"nltk:{library}"
+            # NOTE: 切分句子
             splitter = nltk.load(url)
             if self.args.keep_newlines:
                 # this prevents punkt from eating newlines after sentences
@@ -80,6 +82,7 @@ class Encoder(object):
         for key in self.args.json_keys:
             text = data[key]
             max_len = 1000000
+            # NOTE: 1. 先调用 Encoder.splitter.tokenize(text) 方法，进行分句
             tokens_list = [Encoder.splitter.tokenize(text[i:i+max_len]) for i in range(0, len(text), max_len)]
             output[key] = [tokens for partial in tokens_list for tokens in partial]
         return json.dumps(output), len(json_line)
@@ -97,6 +100,7 @@ class Encoder(object):
             doc_ids = []
             sentence_lens = []
             for sentence in sentences:
+                # NOTE: 2. 再调用 Encoder.tokenizer.tokenize(sentence) 方法，得到 id 化的一个句子
                 sentence_ids = Encoder.tokenizer.tokenize(sentence)
                 if len(sentence_ids) > 0:
                     doc_ids.extend(sentence_ids)
@@ -254,7 +258,31 @@ def check_files_exist(in_ss_out_names, key, num_partitions):
 
 
 def main():
+    # NOTE: 读取命令行参数
     args = get_args()
+    print(args)
+    '''
+    Namespace(
+        append_eod=False, 
+        dataset_impl='mmap', 
+        emoji_file='C:\\Users\\user\\source\\repos\\gpt2-japanese\\emoji.json', 
+        input='datasets/english-fsi/eight.files3.json', 
+        json_keys=['text'], 
+        keep_empty=False, 
+        keep_newlines=False, 
+        log_interval=100, 
+        make_vocab_size_divisible_by=128, 
+        mecab_dict_path=None, 
+        merge_file=None, 
+        output_prefix='fsi-en-bert-8files-bert-large-cased-vocab-bwplc-small3', 
+        rank=0, 
+        split_sentences=True, 
+        tensor_model_parallel_size=1, 
+        tokenizer_type='BertWordPieceCase', 
+        vocab_file='datasets/bert-large-cased-vocab.txt', 
+        workers=1
+    )
+    '''
 
     if args.split_sentences:
         if nltk_available:

@@ -142,10 +142,13 @@ class _IndexWriter(object):
         else:
             self.idx_writer = open(self.idx_path, "wb")
         # fixed, vestigial practice
+        # NOTE: 1
         self.idx_writer.write(_INDEX_HEADER)
         # fixed, vestigial practice
+        # NOTE: 2
         self.idx_writer.write(struct.pack("<Q", 1))
         # the numeric code for the dtype
+        # NOTE: 3
         self.idx_writer.write(struct.pack("<B", DType.code_from_dtype(self.dtype)))
         return self
 
@@ -188,20 +191,25 @@ class _IndexWriter(object):
         sequence_pointers = self._sequence_pointers(sequence_lengths)
 
         # the number of sequences in the dataset
+        # NOTE: 4. 所有句子的数量总和
         sequence_count = len(sequence_lengths)
         self.idx_writer.write(struct.pack("<Q", sequence_count))
 
         # the number of documents in the dataset
+        # NOTE: 5. 所有文档的数量 +1
         document_count = len(document_indices)
         self.idx_writer.write(struct.pack("<Q", document_count))
 
         # the number of tokens per sequence
+        # NOTE: 6. 每个句子中 token 的数量
         self.idx_writer.write(numpy.array(sequence_lengths, dtype=numpy.int32).tobytes(order="C"))
 
         # the byte offsets for all sequences
+        # NOTE: 7. 基于 sizes 计算得到的每个句子的“相对内存地址（的起始位置）”
         self.idx_writer.write(numpy.array(sequence_pointers, dtype=numpy.int64).tobytes(order="C"))
 
         # the sequence indices marking the end of each document
+        # NOTE: 8. 累加的每个文档中的句子的个数用来表示每个文档的结束位置
         self.idx_writer.write(numpy.array(document_indices, dtype=numpy.int64).tobytes(order="C"))
 
         # the mode per sequence
@@ -843,11 +851,14 @@ class IndexedDatasetBuilder(object):
         else:
             self._open = open
 
+        # NOTE: binary write out-file 的句柄
         self.data_file = self._open(bin_path, "wb")
         self.dtype = dtype
         self.multimodal = multimodal
 
+        # NOTE: 存放的是每个句子 sequence length
         self.sequence_lengths = []
+        # NOTE: 主动增加了一个0，之后是每个文档中句子的个数
         self.document_indices = [0]
         self.sequence_modes = [] if self.multimodal else None
 
@@ -859,6 +870,7 @@ class IndexedDatasetBuilder(object):
 
             mode (int, optional): The mode for the item. Defaults to 0.
         """
+        # NOTE: 1. 把 sentence (a list of ids) 写入到 .bin 文件
         np_array = numpy.array(tensor.numpy(), dtype=self.dtype)
         self.data_file.write(np_array.tobytes(order="C"))
         self.sequence_lengths.append(np_array.size)
@@ -887,6 +899,7 @@ class IndexedDatasetBuilder(object):
 
     def end_document(self) -> None:
         """Finalize the document, for use with IndexedDatasetBuilder.add_item"""
+        # NOTE: 2. 把累加之后的句子的数量，增加到 doc_idx 上
         self.document_indices.append(len(self.sequence_lengths))
 
     def add_index(self, path_prefix: str) -> None:
@@ -921,7 +934,9 @@ class IndexedDatasetBuilder(object):
         Args:
             idx_path (str): The path to the index file
         """
+        # NOTE: 3. 把 data_file 关闭
         self.data_file.close()
+        # NOTE: 构造 .idx 文件
         with _IndexWriter(idx_path, self.dtype) as writer:
             writer.write(self.sequence_lengths, self.sequence_modes, self.document_indices)
 
