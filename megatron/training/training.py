@@ -744,13 +744,17 @@ def pretrain(
         ft_integration.maybe_setup_simulated_fault()
 
     # Set pytorch JIT layer fusion options and warmup JIT functions.
+    # NOTE: JIT 融合算子
     set_jit_fusion_options()
 
     # Adjust the startup time so it reflects the largest value.
     # This will be closer to what scheduler will see (outside of
     # image ... launches.
+    # NOTE: time.time()
     global _TRAIN_START_TIME
+    # NOTE: 获取开始时间
     start_time_tensor = torch.tensor([_TRAIN_START_TIME], dtype=torch.double, device='cuda')
+    # NOTE: reduce 的时候，是 MIN 操作，因为如果有 16 个 gpu，那么选择最早开始的 gpu 的那个时间作为开始时间
     torch.distributed.all_reduce(start_time_tensor, op=torch.distributed.ReduceOp.MIN)
     _TRAIN_START_TIME = start_time_tensor.item()
 
@@ -804,7 +808,7 @@ def pretrain(
     # Model, optimizer, and learning rate.
     timers('model-and-optimizer-setup', log_level=0).start(barrier=True)
     app_metrics['app_build_optimizer_start_time'] = one_logger_utils.get_timestamp_in_ms()
-    # NOTE: 2. 模型并行：定义模型架构，并切割模型，最核心的函数
+    # NOTE: 2. 模型并行：定义模型架构，以及优化器，并切割模型，最核心的函数
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(
         model_provider, model_type, checkpointing_context=checkpointing_context
     )
@@ -986,8 +990,8 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     args.model_type = model_type
 
     # Build model.
+    # NOTE: 1. 定义并构建 CPU 版模型
     def build_model():
-        # NOTE: 1. 定义并构建 CPU 版模型
         # NOTE: 1.1 当分布式进行框架采用 virtual pipeline
         if (
             mpu.get_pipeline_model_parallel_world_size() > 1
@@ -1003,6 +1007,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                 # Set pre_process and post_process only after virtual rank is set.
                 pre_process = mpu.is_pipeline_first_stage(ignore_virtual=False, vp_stage=i)
                 post_process = mpu.is_pipeline_last_stage(ignore_virtual=False, vp_stage=i)
+                # NOTE: model_provider_func 会直接对应到 pretrain_xxx.py 里面的 model_provider 方法
                 this_model = model_provider_func(
                     pre_process=pre_process, post_process=post_process, vp_stage=i)
                 this_model.model_type = model_type
@@ -1051,6 +1056,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     # Only parameters that are already tensor model parallel have these
     # attributes set for them. We should make sure the default attributes
     # are set for all params so the optimizer can use them.
+    # NOTE: 2. 设置 Tensor 并行属性
     for model_module in model:
         for param in model_module.parameters():
             tensor_parallel.set_defaults_if_not_set_tensor_model_parallel_attributes(param)
@@ -1236,6 +1242,7 @@ def setup_model_and_optimizer(
 
     # NOTE: 1. 定义模型架构并切割模型，分布式并行启动 n 个进程，每个进程里有一个子模型
     model = get_model(model_provider_func, model_type)
+    # NOTE: 把已经经过 DistributedDataParallel、Float16Module 包装的模型，解包为原始的模型
     unwrapped_model = unwrap_model(model)
 
     kwargs = {}
@@ -1256,6 +1263,7 @@ def setup_model_and_optimizer(
     # NOTE: 3. 设置学习率
     opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
 
+    # NOTE: 4. 导入已有的 checkpoint（如果存在的话）
     if args.moe_use_upcycling:
         torch.distributed.barrier()
         assert not checkpoint_exists(args.save), (

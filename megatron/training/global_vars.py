@@ -88,6 +88,7 @@ def set_global_variables(args, build_tokenizer=True):
     _ensure_var_is_not_initialized(_GLOBAL_ARGS, 'args')
     set_args(args)
 
+    # NOTE: 1. 计算 mini-batch 的个数
     init_num_microbatches_calculator(
         args.rank,
         args.rampup_batch_size,
@@ -97,6 +98,7 @@ def set_global_variables(args, build_tokenizer=True):
         args.decrease_batch_size_if_needed,
     )
     if build_tokenizer:
+        # NOTE: 2. 构造 tokenizer
         _ = _build_tokenizer(args)
     _set_tensorboard_writer(args)
     _set_wandb_writer(args)

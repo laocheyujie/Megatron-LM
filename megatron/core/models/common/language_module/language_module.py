@@ -143,6 +143,7 @@ class LanguageModule(MegatronModule):
             assert not parallel_state.is_pipeline_first_stage(
                 ignore_virtual=False, vp_stage=self.vp_stage
             )
+            # NOTE: 在最后阶段 (流水线/管道的 last stage) 创建 word_embeddings 的第二个副本，初始参数为 0
             # set weights of the duplicated embedding to 0 here,
             # then copy weights from pre processing stage using all_reduce below.
             weight = self.shared_embedding_or_output_weight()
@@ -165,12 +166,14 @@ class LanguageModule(MegatronModule):
 
         # Ensure that first and last stages have the same initial parameter
         # values.
+        # NOTE: 如果当前 gpu 在负责一部分 word embedding，则需要 all-reduce
         if torch.distributed.is_initialized():
             if parallel_state.is_rank_in_embedding_group(
                 ignore_virtual=False, vp_stage=self.vp_stage
             ):
                 weight = self.shared_embedding_or_output_weight()
                 weight.data = weight.data.cuda()
+                # NOTE: 在第一个阶段 (first stage) 和最后一个阶段 (last stage) 之间做一个 all-reduce，以确保 word_embeddings 的两个副本以相同的参数值开始
                 torch.distributed.all_reduce(
                     weight.data, group=parallel_state.get_embedding_group()
                 )

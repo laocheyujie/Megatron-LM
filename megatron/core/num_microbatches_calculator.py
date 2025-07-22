@@ -178,6 +178,7 @@ def _configure_global_num_microbatches_calculator(
             _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None
         ), 'num microbatches calculator is already initialized.'
 
+    # NOTE: 计算 mini-batch 的个数
     _GLOBAL_NUM_MICROBATCHES_CALCULATOR = _build_num_microbatches_calculator(
         rank,
         rampup_batch_size,

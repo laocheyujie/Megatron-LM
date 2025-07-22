@@ -344,9 +344,11 @@ class CoreAttention(MegatronModule):
         coeff = None
         self.norm_factor = math.sqrt(self.hidden_size_per_attention_head)
         if self.apply_query_key_layer_scaling:
+            # NOTE: self.layer_number: transformer layer 在 transformer 中的序号
             coeff = self.layer_number
             self.norm_factor *= coeff
 
+        # NOTE: 融合的 Softmax 算子
         self.scale_mask_softmax = FusedScaleMaskSoftmax(
             self.fp16, self.bf16,
             self.attn_mask_type,
@@ -523,6 +525,7 @@ class ParallelAttention(MegatronModule):
                  attn_mask_type=AttnMaskType.padding):
         super(ParallelAttention, self).__init__()
         args = get_args()
+        # NOTE: 本 parallel attention sublayer 所在的 transformerLayer 在大的 transformer 上的（层）序号
         self.layer_number = max(1, layer_number)
         self.attention_type = attention_type
         self.attn_mask_type = attn_mask_type
@@ -553,9 +556,11 @@ class ParallelAttention(MegatronModule):
                 raise ImportError('einops is not installed, please install with pip install einops')
 
         # Per attention head and per partition values.
+        # NOTE: 一个张量并行组里面包括几个 gpu
         world_size = mpu.get_tensor_model_parallel_world_size()
         self.hidden_size_per_attention_head = core.utils.divide(
             query_projection_size, config.num_attention_heads)
+        # NOTE: 张量并行
         self.num_attention_heads_per_partition = core.utils.divide(
             config.num_attention_heads, world_size)
 
@@ -569,21 +574,27 @@ class ParallelAttention(MegatronModule):
             self.num_query_groups_per_partition = self.num_attention_heads_per_partition
 
         # Strided linear layer.
+        # NOTE: 1. 先列切分
         if attention_type == AttnType.self_attn:
+            # NOTE: 自注意力
             self.query_key_value = tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,
+                # NOTE: Q, K, V
                 query_projection_size + 2 * kv_projection_size,
                 config=config,
                 init_method=config.init_method,
                 bias=args.add_bias_linear or args.add_qkv_bias,
+                # NOTE: 不执行 gather 的操作，目的是为直接顺滑连接后续的 parallel 设置（本 gpu 上的）
                 gather_output=False)
         else:
+            # NOTE: 交叉注意力（source sequence 和 target sequence 之间的）
             assert attention_type == AttnType.cross_attn
 
             if self.group_query_attention:
                 raise NotImplementedError("Grouped query attention not implemented for cross-attention.")
             assert query_projection_size == kv_projection_size
 
+            # NOTE: 来自 target sequence 的 query, Q
             self.query = tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,
                 query_projection_size,
@@ -592,6 +603,7 @@ class ParallelAttention(MegatronModule):
                 bias=config.add_bias_linear,
                 gather_output=False)
 
+            # NOTE 来自 source sequence 的 key, value, K, V
             self.key_value = tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,
                 2 * kv_projection_size,
@@ -613,12 +625,15 @@ class ParallelAttention(MegatronModule):
             )
 
         # Output.
+        # NOTE: 2. 再行切分
+        # NOTE: 输出层的 linear layer
         self.dense = tensor_parallel.RowParallelLinear(
             query_projection_size,
             config.hidden_size,
             config=config,
             init_method=config.output_layer_init_method,
             bias=args.add_bias_linear,
+            # NOTE: 这个参数和前面的 gather_output=False 遥相呼应
             input_is_parallel=True,
             skip_bias_add=True)
 
@@ -881,14 +896,18 @@ class ParallelTransformerLayer(MegatronModule):
 
     def __init__(self, config,
                  layer_number, layer_type=LayerType.encoder,
+                 # NOTE: 注意力 mask 的类型，padding, causal 
                  self_attn_mask_type=AttnMaskType.padding,
                  drop_path_rate=0.):
         args = get_args()
 
         super(ParallelTransformerLayer, self).__init__()
+        # NOTE: 当前 layer 在 transformer 中的序号，从 1 开始
         self.layer_number = layer_number
+        # NOTE: transformer layer 的类型：encoder layer or decoder layer
         self.layer_type = layer_type
 
+        # NOTE: 为 True 时，表示在 layernorm 之后执行残差连接
         self.apply_residual_connection_post_norm \
             = config.apply_residual_connection_post_layernorm
 
@@ -896,9 +915,11 @@ class ParallelTransformerLayer(MegatronModule):
         self.fp32_residual_connection = config.fp32_residual_connection
 
         # Normalize the input data.
+        # NOTE: 真正调用的是 cuda 写的 MixedFusedLayerNorm，其使用了 fused_mix_prec_layer_norm_cuda，混合精度的 layer norm
         self.input_norm = get_norm(config)
 
         # Self attention.
+        # NOTE: 最最重要的部分
         self.self_attention = ParallelAttention(
             config,
             layer_number,
@@ -1490,6 +1511,7 @@ class ParallelTransformer(MegatronModule):
                 current_layer_type = _get_layer_type(
                     model_type, layer_type, self.retro_layer_numbers,
                     layer_number)
+                # NOTE: ParallelTransformerLayer 重点
                 return ParallelTransformerLayer(
                     config,
                     layer_number,
@@ -1563,10 +1585,14 @@ class ParallelTransformer(MegatronModule):
             # Each stage gets a contiguous set of layers.
             if args.model_type == ModelType.encoder_and_decoder and \
                     mpu.get_pipeline_model_parallel_world_size() > 1:
+                # NOTE: pipeline_rank: 当前 gpu 在其所在的 pipeline parallel group 中的 rank
                 pipeline_rank = mpu.get_pipeline_model_parallel_rank()
                 if layer_type == LayerType.encoder:
+                    # NOTE: offset 相当重要，它和当前 gpu 在 pipeline parallel group 中的 rank 决定了一个 gpu 上放的是哪些 layers
+                    # NOTE: 如果是 encoder 那么 offset = pipeline_rank * self.num_layers
                     offset = pipeline_rank * self.num_layers
                 else:
+                    # NOTE: 如果是 decoder 那么 offset = (pipeline_rank - num_ranks_in_enc) * self.num_layers
                     num_ranks_in_enc = args.pipeline_model_parallel_split_rank
                     offset = (pipeline_rank - num_ranks_in_enc) * self.num_layers
             else:
@@ -1584,7 +1610,9 @@ class ParallelTransformer(MegatronModule):
             self.num_layers = 1
             self.layers = torch.nn.ModuleList([ NoopTransformerLayer(1) ])
         else:
+            # NOTE: 重点！构造当前 gpu 上的 transformer (encoder or decoder) layers
             self.layers = torch.nn.ModuleList(
+                # NOTE: build_layer 对应的就是第 i+1+offset 层 transformer layer 的构造
                 [build_layer(i + 1 + offset) for i in range(self.num_layers)])
 
             # Update dropout rate for Retro encoder.

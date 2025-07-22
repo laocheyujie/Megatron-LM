@@ -270,6 +270,7 @@ class T5Model(LanguageModule):
             self.output_layer = self.lm_head.output_layer
 
         if self.pre_process or self.post_process:
+            # NOTE: word_embedding 初始化
             self.setup_embeddings_and_output_layer()
 
     def forward(
