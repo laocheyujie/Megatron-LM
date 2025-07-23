@@ -113,11 +113,58 @@ class T5MaskedWordPieceDataset(MaskedWordPieceDataset):
             source_sample = source_block[i]
             target_sample = target_block[i]
             mask = (target_sample[None, :] >= 1) * (source_sample[:, None] >= 1)
+            '''
+            mask:
+            array([
+                [1, 1, 1, ..., 0, 0, 0],
+                [1, 1, 1, ..., 0, 0, 0],
+                [1, 1, 1, ..., 0, 0, 0],
+                ...,
+                [0, 0, 0, ..., 0, 0, 0],
+                [0, 0, 0, ..., 0, 0, 0],
+                [0, 0, 0, ..., 0, 0, 0]
+            ])
+            1. encoder, encoder mask: (encoder设定长度, encoder设定长度) 其中前 (encoder实际长度, encoder实际长度) 个位置为 1，其余为 0
+            # e.g. (512, 512) 其中 (169, 169) 个位置为 1，其余为 0
+            2. decoder, decoder mask: (decoder设定长度, decoder设定长度) 其中前 (decoder实际长度, decoder实际长度) 个位置为 1，其余为 0
+            # e.g. (128, 128) 其中 (39, 39) 个位置为 1，其余为 0
+            3. decoder, encoder mask: (decoder设定长度, encoder设定长度) 其中前 (decoder实际长度, encoder实际长度) 个位置为 1，其余为 0
+            # e.g. (128, 512) 其中 (39, 169) 个位置为 1，其余为 0
+            '''
             if make_history_mask:
+                # NOTE: 2. decoder, decoder 
+                # NOTE: 生成一个下三角矩阵，用于 Causal Mask
                 arange = numpy.arange(source_sample.shape[0])
                 history_mask = arange[None,] <= arange[:, None]
                 history_mask = torch.tensor(history_mask).to(mask.device)
+                '''
+                2. decoder, decoder history_mask: (decoder设定长度, decoder设定长度)
+                array([
+                    [1, 0, 0, ..., 0, 0, 0],
+                    [1, 1, 0, ..., 0, 0, 0],
+                    [1, 1, 1, ..., 0, 0, 0],
+                    ...,
+                    [1, 1, 1, ..., 1, 0, 0],
+                    [1, 1, 1, ..., 1, 1, 0],
+                    [1, 1, 1, ..., 1, 1, 1]
+                ])
+                
+                # e.g. (128, 128)
+                '''
                 mask = mask * history_mask
+                '''
+                mask: (decoder设定长度, decoder设定长度) 其中前 (decoder实际长度, decoder实际长度) 个位置的下三角为 1，其余为 0
+                array([
+                    [1, 0, 0, ..., 0, 0, 0],
+                    [1, 1, 0, ..., 0, 0, 0],
+                    [1, 1, 1, ..., 0, 0, 0],
+                    ...,
+                    [0, 0, 0, ..., 0, 0, 0],
+                    [0, 0, 0, ..., 0, 0, 0],
+                    [0, 0, 0, ..., 0, 0, 0]
+                ])
+                # e.g. (128, 128) 其中前 (39, 39) 个位置的下三角为 1，其余为 0
+                '''
             mask = ~(mask)  # flip True to False
             attention_mask.append(mask)
         attention_mask = torch.stack(attention_mask)
@@ -230,8 +277,19 @@ class T5MaskedWordPieceDataset(MaskedWordPieceDataset):
         Returns:
             Dict[str, Union[int, numpy.ndarray]]: The
         """
+        # NOTE: 获取当前样本的开始和结束索引，以及规定的序列长度
         idx_beg, idx_end, target_sequence_length = self.sample_index[idx]
+        # NOTE: 一句一句追加到 sample 中，句子是已经 tokenizer 完毕的
         sample = [self.dataset[i] for i in range(idx_beg, idx_end)]
+        '''
+        [
+            array([ 5231, 2129, 3085, 7484, 1514, 2199, 2603, 1106, 1542,   110,   131,  4195,  119], dtype=uint16), 
+            array([  148, 17444,  2559,   117,  1351,  1407,   113, 11336, 27603,  114,   118,  5231,   787,   188,  2129,  3085,  2195,  1157,
+                    1514,  2199,  2603,  1106,  1542,   110,  1121,  1542,   119,  126,   110,  1113,  9170,   117,  1229,  5920,  1157,  2670,
+                    3213, 24647,  1106,   124,   110,  1121,   123,   119,   126,  110,  1111, 10351,   117,  1122,  1163,  1107,   170,  4195,  119], dtype=uint16),
+            ...
+        ]
+        '''
 
         numpy_random_state = numpy.random.RandomState(seed=(self.config.random_seed + idx) % 2**32)
 
@@ -252,6 +310,7 @@ class T5MaskedWordPieceDataset(MaskedWordPieceDataset):
         # Prepare the encoder input and decoder input and output
         sentinels = deque(self.config.tokenizer.additional_special_tokens_ids)
         encoder_input = []
+        # NOTE: decoder_input 添加 bos 标记
         decoder_input = [self.config.tokenizer.bos]
         decoder_output = []
         idx_beg = 0
@@ -274,12 +333,17 @@ class T5MaskedWordPieceDataset(MaskedWordPieceDataset):
             idx_beg = indices[-1] + 1
 
         encoder_input.extend(tokens[idx_beg:])
+        # NOTE: decoder_output 添加 eos 标记
         decoder_output.append(self.config.tokenizer.eos)
 
         # Pad the sequences and convert to NumPy
+        # NOTE: 假设 len(encoder_input) 169
         length_toks_encoder = len(encoder_input)
+        # NOTE: 假设 len(decoder_input) 39
         length_toks_decoder = len(decoder_input)
+        # NOTE: 假设 sequence_length_decoder = 512, encoder 需要 padding 的个数为 512 - 169
         length_pads_encoder = self.config.sequence_length_encoder - length_toks_encoder
+        # NOTE: 假设 sequence_length_decoder = 128, decoder 需要 padding 的个数为 128 - 39
         length_pads_decoder = self.config.sequence_length_decoder - length_toks_decoder
         assert length_pads_encoder >= 0
         assert length_pads_decoder >= 0
@@ -288,32 +352,65 @@ class T5MaskedWordPieceDataset(MaskedWordPieceDataset):
         encoder_input = numpy.pad(
             encoder_input, (0, length_pads_encoder), constant_values=self.config.tokenizer.pad
         )
+        # NOTE: encoder_input 的形状为 (512,)
 
         decoder_input = numpy.array(decoder_input, dtype=numpy.int64)
         decoder_input = numpy.pad(
             decoder_input, (0, length_pads_decoder), constant_values=self.config.tokenizer.pad
         )
+        # NOTE: decoder_input 的形状为 (128,)
 
         # Create attention and history masks
+        # NOTE: mask_encoder 的形状为 (512,)，其中前 169 个位置为 1，其余为 0
         mask_encoder = numpy.array([1] * length_toks_encoder + [0] * length_pads_encoder)
+        # NOTE: mask_decoder 的形状为 (128,)，其中前 39 个位置为 1，其余为 0
         mask_decoder = numpy.array([1] * length_toks_decoder + [0] * length_pads_decoder)
         mask_encoder_decoder = None
 
         # Mask the labels
         decoder_output = numpy.array(decoder_output, dtype=numpy.int64)
+        # NOTE: 对 decoder_output 进行 padding，padding 的值为 -1
         decoder_output = numpy.pad(decoder_output, (0, length_pads_decoder), constant_values=-1)
+        '''
+        decoder_output:
+        [28998, 3085, 28999, 2199, 2603, 1106, 29000, 126, 110, 29001, 117, 29002, 
+        127, 119, 124, 110, 29003, 5231, 787, 29004, 119, 29005, 10351, 29006, 
+        1157, 24647, 1111, 10351, 15503, 1120, 127, 119, 124, 110, 29007, 22100, 
+        2690, 114, 28997=<eos>, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+        
+        decoder实际长度 个有效值
+        # e.g. 39 个有效值
+        '''
 
         # Get the loss mask
+        # NOTE: loss_mask 的长度是 decoder 的序列长度，其中前 len(decoder_input) 个位置为 1，其余为 0
         loss_mask = numpy.zeros(self.config.sequence_length_decoder, dtype=numpy.int64)
         loss_mask[:length_toks_decoder] = 1
+        '''
+        loss_mask:
+        [1] * decoder实际长度 + [0] * (decoder设定长度 - decoder实际长度)
+        # e.g. [1] * 39 + [0] * (128 - 39)
+        '''
 
         return {
+            # NOTE: encoder_input 的形状为 (encoder设定长度,) 其中前 encoder实际长度 个位置为 token id，其余为 pad id 0  # e.g. (512,) (169)
             "text_enc": encoder_input,
+            # NOTE: decoder_input 的形状为 (decoder设定长度,) 其中前 decoder实际长度 个位置为 token id，其余为 pad id 0  # e.g. (128,) (39)
             "text_dec": decoder_input,
+            # NOTE: decoder_output 的形状为 (decoder设定长度,) 其中前 decoder实际长度 个位置为 token id，其余为 -1  # e.g. (128,) (39)
             "labels": decoder_output,
+            # NOTE: loss_mask 的形状为 (decoder设定长度,) 其中前 decoder实际长度 个位置为 1，其余为 0  # e.g. (128,) (39)
             "loss_mask": loss_mask,
+            # NOTE: truncated 为 False
             "truncated": int(truncated),
+            # NOTE: mask_encoder 的形状为 (encoder设定长度, encoder设定长度) 其中前 (encoder实际长度, encoder实际长度) 个位置为 1，其余为 0  # e.g. (512, 512) (169, 169)
             "enc_mask": mask_encoder,
+            # NOTE: mask_decoder 的形状为 (decoder设定长度, decoder设定长度) 其中前 (decoder实际长度, decoder实际长度) 个位置为 1，其余为 0  # e.g. (128, 128) (39, 39)
             "dec_mask": mask_decoder,
         }
 

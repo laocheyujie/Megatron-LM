@@ -472,8 +472,8 @@ def forward_backward_no_pipelining(
 
     See get_forward_backward_func() for argument details
     """
-    # NOTE: forward_backward_no_pipelining中以microbatch为粒度，先进行前向计算，紧跟着进行反向计算
-    # 前 n-1 个 microbatch 不会进行同步操作，直到最后一个再进行同步
+    # NOTE: forward_backward_no_pipelining 中以 micro-batch 为粒度，先进行前向计算，紧跟着进行反向计算
+    # 前 n-1 个 micro-batch 不会进行同步操作，直到最后一个 micro-batch 再进行同步
     # 这个过程中不涉及跨 stage 的通信，同时也不支持 sequence 并行，前向计算的 loss 会存在 forward_data_store 中返回
 
     if isinstance(model, list):

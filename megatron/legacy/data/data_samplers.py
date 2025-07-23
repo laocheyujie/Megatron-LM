@@ -60,6 +60,7 @@ class MegatronPretrainingSampler:
         self.consumed_samples = consumed_samples
         self.micro_batch_size = micro_batch_size
         self.data_parallel_rank = data_parallel_rank
+        # NOTE: 一个数据并行组可以一次消耗多少个 samples
         self.micro_batch_times_data_parallel_size = \
             self.micro_batch_size * data_parallel_size
         self.drop_last = drop_last

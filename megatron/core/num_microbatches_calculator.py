@@ -48,6 +48,7 @@ def update_num_microbatches(
         verbose (bool, optional):
             Option to control logging. Defaults to False.
     """
+    # NOTE: 更新目前为止消耗了多少样本
     _GLOBAL_NUM_MICROBATCHES_CALCULATOR.update(consumed_samples, consistency_check, verbose)
 
 
