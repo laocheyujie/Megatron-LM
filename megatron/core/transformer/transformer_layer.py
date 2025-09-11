@@ -388,6 +388,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
                     logging.WARNING,
                     f"Unknown MLP type: {type(submodules.mlp)}. Using default kwargs.",
                 )
+        # NOTE: additional_mlp_kwargs: {'tp_group': <torch.distributed.distributed_c10d.ProcessGroup object at 0x7faec47be230>}
         self.mlp = build_module(submodules.mlp, config=self.config, **additional_mlp_kwargs)
         if hasattr(self.mlp, 'set_layer_number'):
             self.mlp.set_layer_number(self.layer_number)

@@ -786,6 +786,7 @@ def initialize_model_parallel(
     else:
         encoder_rank_generator = None
 
+    # NOTE: 按照 order 顺序把对应的 size 排列
     decoder_rank_generator = RankGenerator(
         tp=tensor_model_parallel_size,
         ep=1,
@@ -799,10 +800,11 @@ def initialize_model_parallel(
     # Build expert rank generator
     if expert_tensor_parallel_size is None:
         expert_tensor_parallel_size = tensor_model_parallel_size
+    # NOTE: EP 的计算
     expert_tensor_model_pipeline_parallel_size = (
         expert_tensor_parallel_size * expert_model_parallel_size * pipeline_model_parallel_size
     )
-    # NOTE: DP of MoE = world_size / (TP * EP * PP)
+    # NOTE: DP of MoE = world_size / (ETP * EMP * PP)
     expert_data_parallel_size = decoder_world_size // expert_tensor_model_pipeline_parallel_size
     if decoder_world_size % expert_tensor_model_pipeline_parallel_size != 0:
         raise RuntimeError(

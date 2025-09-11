@@ -85,6 +85,7 @@ def initialize_megatron(
     if args.yaml_cfg is not None:
         args = validate_yaml(args, args_defaults)
     else:
+        # NOTE: 验证参数
         validate_args(args, args_defaults)
 
     # set global args, build tokenizer, and set adlr-autoresume,
@@ -332,6 +333,7 @@ def _initialize_distributed(get_embedding_ranks, get_position_embedding_ranks, s
         if args.external_cuda_graph:
             torch.cuda.set_stream(torch.cuda.Stream())
 
+        # NOTE: 初始化分布式环境配置
         # Call the init process
         init_process_group_kwargs = {
             'backend': args.distributed_backend,

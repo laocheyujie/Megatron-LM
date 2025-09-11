@@ -108,6 +108,7 @@ def get_gpt_layer_with_transformer_engine_spec(
     else:
         backend = TESpecProvider()
 
+    # NOTE: 返回具体的 MLP/MoE 模型结构
     mlp = get_mlp_module_spec_for_backend(
         backend=backend,
         num_experts=num_experts,
@@ -154,6 +155,7 @@ def get_gpt_layer_with_transformer_engine_spec(
             ),
         )
     else:
+        # NOTE: LayerNorm 的实现方式
         qk_norm = backend.layer_norm(for_qk=True)
         return ModuleSpec(
             module=TransformerLayer,
@@ -373,17 +375,23 @@ def get_mlp_module_spec_for_backend(
     use_te_op_fuser: Optional[bool] = False,
 ) -> ModuleSpec:
     """Helper function to get module spec for MLP/MoE"""
+    # NOTE: 关键函数：根据配置，返回具体的 MLP/MoE 模型结构
 
     linear_fc2 = backend.row_parallel_linear()
 
     if num_experts is None:
         # Dense MLP w/ or w/o TE modules.
+        # NOTE: 根据后端（backend）的能力和配置（use_te_op_fuser）来选择最优的实现方式，以提升性能
         if use_te_op_fuser:
+            # NOTE: 使用 NVIDIA Transformer Engine (TE) 提供的 TEFusedMLP
+            # NOTE: 这是一种高度优化的、将多个操作（如 GEMM、激活函数）融合在一起的 MLP 实现，性能非常好
             return ModuleSpec(module=TEFusedMLP)
         elif backend.fuse_layernorm_and_linear():
+            # NOTE: 如果后端支持将 LayerNorm 和线性层融合 backend.fuse_layernorm_and_linear()，会为第一个线性层（linear_fc1）选择一个融合了 LayerNorm 的版本
             linear_fc1 = backend.column_parallel_layer_norm_linear()
             assert linear_fc1 is not None
         else:
+            # NOTE: 使用标准的并行线性层
             linear_fc1 = backend.column_parallel_linear()
         # NOTE: KEY MLP
         return ModuleSpec(
@@ -411,6 +419,34 @@ def get_gpt_decoder_block_spec(
     """GPT block spec."""
     if use_transformer_engine:
         layer_norm_impl = TENorm
+        # NOTE: dense_layer_spec: ModuleSpec(
+        #     module=<class 'megatron.core.transformer.transformer_layer.TransformerLayer'>, params={}, 
+        #     submodules=TransformerLayerSubmodules(
+        #         input_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         self_attention=ModuleSpec(
+        #             module=<class 'megatron.core.transformer.attention.SelfAttention'>, params={'attn_mask_type': <AttnMaskType.causal: 2>}, 
+        #             submodules=SelfAttentionSubmodules(
+        #                 linear_qkv=<class 'megatron.core.extensions.transformer_engine.TELayerNormColumnParallelLinear'>, 
+        #                 core_attention=<class 'megatron.core.extensions.transformer_engine.TEDotProductAttention'>, 
+        #                 linear_proj=<class 'megatron.core.extensions.transformer_engine.TERowParallelLinear'>, 
+        #                 q_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #                 k_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>)
+        #             ), 
+        #         self_attn_bda=<function get_bias_dropout_add at 0x7fec04cfd800>, 
+        #         pre_cross_attn_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         cross_attention=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         cross_attn_bda=<class 'megatron.core.transformer.identity_op.IdentityFuncOp'>, 
+        #         pre_mlp_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         mlp=ModuleSpec(
+        #             module=<class 'megatron.core.transformer.mlp.MLP'>, params={}, 
+        #             submodules=MLPSubmodules(
+        #                 linear_fc1=<class 'megatron.core.extensions.transformer_engine.TELayerNormColumnParallelLinear'>, 
+        #                 linear_fc2=<class 'megatron.core.extensions.transformer_engine.TERowParallelLinear'>
+        #             )
+        #         ), 
+        #         mlp_bda=<function get_bias_dropout_add at 0x7fec04cfd800>, sharded_state_dict_keys_map={'mlp.0.weight': 'mlp.linear_fc1.layer_norm_weight', 'mlp.0.bias': 'mlp.linear_fc1.layer_norm_bias', 'mlp.1.basic_ops.0.weight': 'mlp.linear_fc1.weight', 'mlp.1.basic_ops.1.bias': 'mlp.linear_fc1.bias', 'mlp.3.basic_ops.0.weight': 'mlp.linear_fc2.weight', 'mlp.3.basic_ops.1.bias': 'mlp.linear_fc2.bias'}
+        #     )
+        # )
         dense_layer_spec = get_gpt_layer_with_transformer_engine_spec(
             num_experts=None,
             moe_grouped_gemm=False,
@@ -420,6 +456,46 @@ def get_gpt_decoder_block_spec(
             qk_l2_norm=qk_l2_norm,
             use_kitchen=config.use_kitchen,
         )
+        # NOTE: moe_layer_spec: ModuleSpec(
+        #     module=<class 'megatron.core.transformer.transformer_layer.TransformerLayer'>, params={}, 
+        #     submodules=TransformerLayerSubmodules(
+        #         input_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         self_attention=ModuleSpec(
+        #             module=<class 'megatron.core.transformer.attention.SelfAttention'>, params={'attn_mask_type': <AttnMaskType.causal: 2>}, 
+        #             submodules=SelfAttentionSubmodules(
+        #                 linear_qkv=<class 'megatron.core.extensions.transformer_engine.TELayerNormColumnParallelLinear'>, 
+        #                 core_attention=<class 'megatron.core.extensions.transformer_engine.TEDotProductAttention'>, 
+        #                 linear_proj=<class 'megatron.core.extensions.transformer_engine.TERowParallelLinear'>, 
+        #                 q_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #                 k_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>)
+        #             ), 
+        #         self_attn_bda=<function get_bias_dropout_add at 0x7fec04cfd800>, 
+        #         pre_cross_attn_layernorm=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         cross_attention=<class 'megatron.core.transformer.identity_op.IdentityOp'>, 
+        #         cross_attn_bda=<class 'megatron.core.transformer.identity_op.IdentityFuncOp'>, 
+        #         pre_mlp_layernorm=<class 'megatron.core.extensions.transformer_engine.TENorm'>, 
+        #         mlp=ModuleSpec(
+        #             module=<class 'megatron.core.transformer.moe.moe_layer.MoELayer'>, params={}, 
+        #             submodules=MoESubmodules(
+        #                 experts=ModuleSpec(
+        #                     module=<class 'megatron.core.transformer.moe.experts.TEGroupedMLP'>, params={}, 
+        #                     submodules=MLPSubmodules(
+        #                         linear_fc1=<class 'megatron.core.extensions.transformer_engine.TEColumnParallelGroupedLinear'>, 
+        #                         linear_fc2=<class 'megatron.core.extensions.transformer_engine.TERowParallelGroupedLinear'>
+        #                     )
+        #                 ), 
+        #                 shared_experts=ModuleSpec(
+        #                     module=<class 'megatron.core.transformer.moe.shared_experts.SharedExpertMLP'>, params={'gate': False}, 
+        #                     submodules=MLPSubmodules(
+        #                         linear_fc1=<class 'megatron.core.extensions.transformer_engine.TEColumnParallelLinear'>, 
+        #                         linear_fc2=<class 'megatron.core.extensions.transformer_engine.TERowParallelLinear'>
+        #                     )
+        #                 )
+        #             )
+        #         ), 
+        #         mlp_bda=<function get_bias_dropout_add at 0x7fec04cfd800>, sharded_state_dict_keys_map={'mlp.0.weight': 'mlp.linear_fc1.layer_norm_weight', 'mlp.0.bias': 'mlp.linear_fc1.layer_norm_bias', 'mlp.1.basic_ops.0.weight': 'mlp.linear_fc1.weight', 'mlp.1.basic_ops.1.bias': 'mlp.linear_fc1.bias', 'mlp.3.basic_ops.0.weight': 'mlp.linear_fc2.weight', 'mlp.3.basic_ops.1.bias': 'mlp.linear_fc2.bias'}
+        #     )
+        # )
         moe_layer_spec = get_gpt_layer_with_transformer_engine_spec(
             num_experts=config.num_moe_experts,
             moe_grouped_gemm=config.moe_grouped_gemm,

@@ -47,8 +47,16 @@ def get_moe_module_spec_for_backend(
     linear_fc1 = backend.column_parallel_linear()
     linear_fc2 = backend.row_parallel_linear()
 
+    # NOTE: 定义单个专家的基础结构
     mlp = MLPSubmodules(linear_fc1=linear_fc1, linear_fc2=linear_fc2)
 
+    # NOTE: 定义专家组
+    # moe_grouped_gemm: 分组矩阵乘法，将多个专家的计算批处理在一起，提高计算效率和硬件利用率
+    # NOTE: expert_module: <class 'megatron.core.transformer.moe.experts.TEGroupedMLP'>
+    # NOTE: expert_submodule: MLPSubmodules(
+    #     linear_fc1=<class 'megatron.core.extensions.transformer_engine.TEColumnParallelGroupedLinear'>, 
+    #     linear_fc2=<class 'megatron.core.extensions.transformer_engine.TERowParallelGroupedLinear'>
+    # )
     expert_module, expert_submodule = backend.grouped_mlp_modules(
         moe_grouped_gemm is not None and moe_grouped_gemm,
         moe_use_legacy_grouped_gemm is not None and moe_use_legacy_grouped_gemm,
@@ -60,6 +68,26 @@ def get_moe_module_spec_for_backend(
     shared_experts = ModuleSpec(module=SharedExpertMLP, params={"gate": False}, submodules=mlp)
 
     # MoE module spec
+    # NOTE: MoELayer 顶层模块实现 MoE 核心逻辑（如 token 路由、专家输出组合等）
+    # NOTE: moe_module_spec: ModuleSpec(
+    #     module=<class 'megatron.core.transformer.moe.moe_layer.MoELayer'>, params={}, 
+    #     submodules=MoESubmodules(
+    #         experts=ModuleSpec(
+    #             module=<class 'megatron.core.transformer.moe.experts.TEGroupedMLP'>, params={}, 
+    #             submodules=MLPSubmodules(
+    #                 linear_fc1=<class 'megatron.core.extensions.transformer_engine.TEColumnParallelGroupedLinear'>, 
+    #                 linear_fc2=<class 'megatron.core.extensions.transformer_engine.TERowParallelGroupedLinear'>
+    #             )
+    #         ), 
+    #         shared_experts=ModuleSpec(
+    #             module=<class 'megatron.core.transformer.moe.shared_experts.SharedExpertMLP'>, params={'gate': False}, 
+    #             submodules=MLPSubmodules(
+    #                 linear_fc1=<class 'megatron.core.extensions.transformer_engine.TEColumnParallelLinear'>, 
+    #                 linear_fc2=<class 'megatron.core.extensions.transformer_engine.TERowParallelLinear'>
+    #             )
+    #         )
+    #     )
+    # )
     moe_module_spec = ModuleSpec(
         module=MoELayer, submodules=MoESubmodules(experts=experts, shared_experts=shared_experts)
     )

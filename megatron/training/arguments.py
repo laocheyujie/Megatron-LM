@@ -374,7 +374,9 @@ def validate_args(args, defaults={}):
     if args.encoder_pipeline_model_parallel_size > 0 and args.encoder_tensor_model_parallel_size == 0:
         args.encoder_tensor_model_parallel_size = args.tensor_model_parallel_size
 
+    # NOTE: Encoder 部分模型并行大小
     encoder_model_size = args.encoder_tensor_model_parallel_size * args.encoder_pipeline_model_parallel_size * args.context_parallel_size
+    # NOTE: Decoder 部分模型并行大小
     decoder_model_size = args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
     total_model_size = encoder_model_size + decoder_model_size
 
@@ -389,6 +391,7 @@ def validate_args(args, defaults={}):
     # Pipeline model parallel size.
     args.transformer_pipeline_model_parallel_size = args.pipeline_model_parallel_size
 
+    # NOTE: 数据并行大小
     args.data_parallel_size = args.world_size // total_model_size
 
     if args.rank == 0:
