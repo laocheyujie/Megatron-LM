@@ -1,3 +1,33 @@
+## 使用
+1. 首先提供一个 `train_valid_test_datasets_provider` 函数，能够返回 encode 后用于输入给模型的 `train_ds, valid_ds, test_ds`
+2. 再提供一个 `model_provider` 函数，可以直接用 Megatron-LM `pretrain_gpt.py` 里的，也可以进行魔改，能够返回 Megatron-LM 包装上各种并行方式的 `GPTModel`
+    1. 根据传入的 `args` 命令行参数或参数文件，解析为 `TransformerConfig`
+    2. 根据 `TransformerConfig` 使用 `get_gpt_decoder_block_spec`, `get_gpt_layer_xxx` 获取 `transformer_layer_spec`
+    3. 根据 `TransformerConfig`, `transformer_layer_spec`, `args` 生成 `GPTModel` 骨架
+3. 最后提供 `forward_step` 前向计算的过程
+    1. 定义一个 `get_batch` 方法来获取一个 batch 的 `tokens, labels, loss_mask, attention_mask, position_ids`
+    2. 把上述内容传给模型进行前向过程得到 `loss`
+    3. 定义一个 `loss_func` 方法来对得到的 `loss` 进行后续计算处理
+
+
+## 参考代码
+1. `train_valid_test_datasets_provider`:
+    - Megatron-LM/pretrain_gpt.py# `train_valid_test_datasets_provider`
+    - ms-swift/swift/megatron/train/sft.py# `_prepare_dataset`
+2. `model_provider`:
+    - Megatron-LM/pretrain_gpt.py# `model_provider`
+    - ms-swift/swift/megatron/model/gpt/model.py# `model_provider`
+3. `forward_step`:
+    - Megatron-LM/pretrain_gpt.py# `forward_step`
+    - ms-swift/swift/megatron/trainers/trainer.py# `forward_step`
+4. `get_batch`:
+    - Megatron-LM/pretrain_gpt.py# `get_batch`
+    - ms-swift/swift/megatron/trainers/utils.py# `get_batch`
+5. `loss_func`:
+    - Megatron-LM/pretrain_gpt.py# `loss_func`
+    - ms-swift/swift/megatron/trainers/trainer.py# `loss_func`
+
+
 ## 数据
 ```bash
 jsonfile="datasets/english-fsi/eight.files3.json"
